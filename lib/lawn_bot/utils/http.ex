@@ -41,7 +41,9 @@ defmodule LawnBot.Utils.HTTP do
            method,
            {String.to_charlist(url), headers_to_charlist(headers), ~c"application/json",
             Jason.encode!(payload)},
-           [timeout: 10_000, connect_timeout: 5_000], body_format: :binary) do
+           [timeout: 10_000, connect_timeout: 5_000],
+           body_format: :binary
+         ) do
       {:ok, {{_version, status, _reason}, _headers, response_body}} when status in 200..299 ->
         decode(response_body)
 

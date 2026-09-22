@@ -6,7 +6,7 @@ defmodule LawnBot.Application do
   def start(_type, _args) do
     children = [
       {Registry, name: LawnBot.AdapterRegistry, keys: :unique},
-      LawnBot.AdapterSupervisor,
+      LawnBot.AdapterSupervisor
       # {Registry, name: LawnBot.SessionRegistry, keys: :unique},
       # {DynamicSupervisor, name: LawnBot.SessionSupervisor, strategy: :one_for_one}
     ]
