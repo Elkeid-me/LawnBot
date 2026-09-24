@@ -108,11 +108,11 @@ defmodule LawnBot.Adapters.QQ.Shard do
     state =
       case payload do
         %{"t" => "READY", "d" => %{"session_id" => session_id}} ->
-          Logger.info("QQ shard #{inspect_shard(state.shard)} READY, session_id=#{session_id}")
+          Logger.info("READY on QQ shard #{inspect_shard(state.shard)}, session_id=#{session_id}")
           %{state | session_id: session_id, seq: payload["s"]}
 
         %{"t" => "RESUMED"} ->
-          Logger.info("QQ shard #{inspect_shard(state.shard)} resumed from seq #{inspect(state.seq)}")
+          Logger.info("RESUMED on QQ shard #{inspect_shard(state.shard)}, from seq #{state.seq}")
           update_seq(state, payload)
 
         _ ->
@@ -123,9 +123,8 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   # 服务端主动下发的心跳请求，立即回包。
-  defp handle_payload(%{"op" => 1}, state) do
-    {:reply, heartbeat_frame(state), %{state | awaiting_ack?: true}}
-  end
+  defp handle_payload(%{"op" => 1}, state),
+    do: {:reply, heartbeat_frame(state), %{state | awaiting_ack?: true}}
 
   # 服务端要求重连，重连后用 Resume 继续，不丢事件。
   defp handle_payload(%{"op" => 7}, state) do
@@ -136,7 +135,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   # Identify/Resume 被拒绝：丢弃会话，下次连接重新 Identify。
   defp handle_payload(%{"op" => 9} = payload, state) do
     Logger.warning(
-      "QQ shard #{inspect_shard(state.shard)} got invalid session: #{inspect(payload["d"])}, " <>
+      "Invalid Session on QQ shard #{inspect_shard(state.shard)}: #{inspect(payload["d"])}, " <>
         "falling back to a fresh Identify"
     )
 
@@ -146,11 +145,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   # Hello：心跳周期以此为准，延时后发起 Identify/Resume。
   defp handle_payload(%{"op" => 10, "d" => %{"heartbeat_interval" => interval}}, state) do
     state = %{state | heartbeat_interval: interval, awaiting_ack?: false}
-
-    Logger.info(
-      "QQ shard #{inspect_shard(state.shard)} received Hello, heartbeat interval #{interval}ms"
-    )
-
+    Logger.info("Hello on QQ shard #{inspect_shard(state.shard)}, heartbeat interval #{interval}ms")
     {:ok, schedule_authenticate(state, authenticate_delay(state))}
   end
 
@@ -158,7 +153,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp handle_payload(%{"op" => 11}, state), do: {:ok, %{state | awaiting_ack?: false}}
 
   defp handle_payload(payload, state) do
-    Logger.debug("QQ shard #{inspect_shard(state.shard)} ignoring gateway op=#{inspect(payload["op"])}")
+    Logger.debug("QQ shard #{inspect_shard(state.shard)} ignoring op=#{inspect(payload["op"])}")
     {:ok, state}
   end
 
@@ -168,11 +163,8 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
     {action, payload} =
       case state.session_id do
-        nil ->
-          {"identifying", QQ.identify_payload(access_token, state.config, state.shard)}
-
-        session_id ->
-          {"resuming", QQ.resume_payload(access_token, session_id, state.seq)}
+        nil -> {"identifying", QQ.identify_payload(access_token, state.config, state.shard)}
+        session_id -> {"resuming", QQ.resume_payload(access_token, session_id, state.seq)}
       end
 
     Logger.info("QQ shard #{inspect_shard(state.shard)} #{action}")
@@ -181,10 +173,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   def handle_info(:heartbeat, state) do
     if state.awaiting_ack? do
-      Logger.warning(
-        "QQ shard #{inspect_shard(state.shard)} missed heartbeat ACK, reconnecting to resume"
-      )
-
+      Logger.warning("ACK missed on QQ shard #{inspect_shard(state.shard)}, reconnecting to resume")
       {:close, %{state | awaiting_ack?: false}}
     else
       state = schedule_heartbeat(%{state | awaiting_ack?: true})
@@ -226,33 +215,14 @@ defmodule LawnBot.Adapters.QQ.Shard do
     event = QQ.event(payload, state.shard)
 
     case state.event_handler do
-      nil ->
-        Logger.info(
-          "QQ event #{inspect(event.type)} on shard #{inspect_shard(state.shard)} " <>
-            "(no :event_handler configured)"
-        )
-
-      handler ->
-        dispatch(handler, event)
+      nil -> Logger.debug("#{inspect(event.type)} on QQ shard #{inspect_shard(state.shard)}")
+      handler -> dispatch(handler, event)
     end
 
     state
   end
 
-  defp dispatch(handler, event) when is_pid(handler), do: send(handler, {:lawn_bot_event, event})
-
-  defp dispatch(handler, event) when is_function(handler, 1), do: handler.(event)
-
-  defp dispatch(handler, event) when is_atom(handler) do
-    case Process.whereis(handler) do
-      nil -> Logger.warning("QQ event_handler #{inspect(handler)} is not a registered process")
-      pid -> send(pid, {:lawn_bot_event, event})
-    end
-  end
-
-  defp dispatch(handler, _event) do
-    Logger.warning("Unsupported QQ event_handler: #{inspect(handler)}")
-  end
+  defp dispatch(_handler, _event), do: nil
 
   # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
   defp authenticate_delay(state) do
@@ -284,12 +254,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp heartbeat_frame(state), do: {:text, Jason.encode!(%{"op" => 1, "d" => state.seq})}
-
-  defp backoff(attempt) do
-    min(round(:math.pow(2, attempt)) * 500, @max_backoff)
-  end
-
+  defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
   defp shard_id(%__MODULE__{shard: [shard_id | _]}), do: shard_id
-
   defp inspect_shard([shard_id, shards]), do: "#{shard_id + 1}/#{shards}"
 end

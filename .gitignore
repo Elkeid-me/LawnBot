@@ -22,7 +22,5 @@ idb-*.tar
 # Temporary files, for example, from tests.
 /tmp/
 
-/config/config.exs
 /config/runtime.exs
 
-/ref/

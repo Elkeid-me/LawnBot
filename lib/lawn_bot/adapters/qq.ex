@@ -70,46 +70,42 @@ defmodule LawnBot.Adapters.QQ do
         }
 
   @doc """
-  启动 QQ 适配器监督树，并在其下拉起负责 token 与分片管理的 Coordinator。
+  启动 QQ 适配器监督树，并在其下拉起负责 access token 与分片管理的 Coordinator。
 
   未配置 `app_id` / `client_secret`（例如环境变量缺失导致的空字符串）时返回
   `:ignore`，避免用无效凭据反复请求网关。
   """
   @spec start_link(config()) :: {:ok, pid()} | {:error, term()} | :ignore
   def start_link(%{app_id: app_id, client_secret: client_secret} = config)
-      when is_binary(app_id) and is_binary(client_secret) do
-    Logger.info("Starting QQ adapter, appId: #{app_id}")
+      when is_binary(app_id) and is_binary(client_secret) and app_id != "" and client_secret != "" do
+    Logger.info("Starting QQ adapter, app id: #{app_id}")
 
-    case DynamicSupervisor.start_link(__MODULE__, config, name: via(config)) do
-      {:ok, supervisor} ->
-        start_coordinator(supervisor, config)
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, pid} <- DynamicSupervisor.start_link(__MODULE__, config, name: via(config)),
+         {:ok, _pid} <- start_coordinator(pid, config) do
+      {:ok, pid}
     end
   end
 
   def start_link(_config) do
-    Logger.warning("QQ adapter skipped: no app_id or client_secret set.")
+    Logger.warning("Skipping QQ adapter: no app_id or client_secret set.")
     :ignore
   end
 
   @impl true
-  def init(_config) do
+  def init(_config),
     # 单个分片反复崩溃时让整棵 QQ 适配器树重启，而不是无限拉起坏掉的连接。
-    DynamicSupervisor.init(strategy: :one_for_one, max_restarts: 3, max_seconds: 5)
-  end
+    do: DynamicSupervisor.init(strategy: :one_for_one, max_restarts: 3, max_seconds: 5)
 
-  defp start_coordinator(supervisor, config) do
-    spec = {LawnBot.Adapters.QQ.Coordinator, {supervisor, config}}
+  defp start_coordinator(supervisor_pid, config) do
+    spec = {LawnBot.Adapters.QQ.Coordinator, {supervisor_pid, config}}
 
-    case DynamicSupervisor.start_child(supervisor, spec) do
-      {:ok, _pid} ->
-        {:ok, supervisor}
+    case DynamicSupervisor.start_child(supervisor_pid, spec) do
+      {:ok, pid} ->
+        {:ok, pid}
 
       {:error, reason} ->
         Logger.error("Failed to start QQ coordinator: #{inspect(reason)}")
-        DynamicSupervisor.stop(supervisor, :shutdown)
+        DynamicSupervisor.stop(supervisor_pid, :shutdown)
         {:error, reason}
     end
   end
@@ -120,8 +116,7 @@ defmodule LawnBot.Adapters.QQ do
   @doc "Coordinator 进程在 Registry 中的名字。"
   def coordinator_name(config),
     do:
-      {:via, Registry,
-       {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.Coordinator, app_id(config)}}}
+      {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.Coordinator, app_id(config)}}}
 
   # 指定分片连接进程在 Registry 中的 key。
   defp shard_registry_key(config, shard_id),
