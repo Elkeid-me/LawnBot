@@ -7,22 +7,25 @@ defmodule LawnBot.Application do
     children = [
       {Registry, name: LawnBot.AdapterRegistry, keys: :unique},
       LawnBot.AdapterSupervisor
-      # {Registry, name: LawnBot.SessionRegistry, keys: :unique},
-      # {DynamicSupervisor, name: LawnBot.SessionSupervisor, strategy: :one_for_one}
     ]
 
-    Logger.info("Starting LawnBot")
-    opts = [strategy: :one_for_one, name: LawnBot.Supervisor]
-    {:ok, pid} = Supervisor.start_link(children, opts)
+    with gateways when is_map(gateways) and map_size(gateways) > 0 <-
+           Application.get_env(:lawn_bot, :gateways),
+         {:ok, pid} <-
+           Supervisor.start_link(children, strategy: :one_for_one, name: LawnBot.Supervisor) do
+      Enum.each(gateways, &start_adapters/1)
+      {:ok, pid}
+    else
+      {:error, _reason} ->
+        Logger.error("Failed to start LawnBot application supervisor.")
+        {:error, :cannot_start_supervisor}
 
-    gateways = Application.get_env(:lawn_bot, :gateways, %{})
-
-    Enum.each(gateways, fn {platform, configs} ->
-      Enum.each(configs, fn config ->
-        LawnBot.AdapterSupervisor.start_adapter(platform, config)
-      end)
-    end)
-
-    {:ok, pid}
+      _ ->
+        Logger.error("No gateways configured for LawnBot. Please check your configuration.")
+        {:error, :no_gateways_configured}
+    end
   end
+
+  defp start_adapters({platform, configs}) when is_list(configs),
+    do: Enum.each(configs, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
 end

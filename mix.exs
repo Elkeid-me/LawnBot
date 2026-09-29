@@ -21,7 +21,7 @@ defmodule LawnBot.MixProject do
 
   def application do
     [
-      extra_applications: [:inets, :logger, :ssl],
+      extra_applications: [:logger],
       mod: {LawnBot.Application, []}
     ]
   end
@@ -30,6 +30,7 @@ defmodule LawnBot.MixProject do
     [
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:jason, "~> 1.4"},
+      {:req, "~> 0.7.4"},
       {:websockex, "~> 0.5.1"}
     ]
   end
