@@ -27,6 +27,7 @@ defmodule LawnBot.Adapters.QQ do
   @type config() :: %{
           required(:app_id) => String.t(),
           required(:client_secret) => String.t(),
+          optional(:name) => String.t(),
           optional(:os) => String.t(),
           optional(:browser) => String.t(),
           optional(:device) => String.t(),
@@ -45,7 +46,8 @@ defmodule LawnBot.Adapters.QQ do
   @spec start_link(config()) :: {:ok, pid()} | {:error, term()} | :ignore
   def start_link(%{app_id: app_id, client_secret: client_secret} = config)
       when is_binary(app_id) and is_binary(client_secret) and app_id != "" and client_secret != "" do
-    Logger.info("Starting QQ adapter, app id: #{app_id}")
+    Logger.info("Starting")
+    Logger.info("Starting #{bot_name(config)}")
 
     with {:ok, pid} <- DynamicSupervisor.start_link(__MODULE__, config, name: via_tuple(app_id)),
          {:ok, _pid} <- start_coordinator(pid, config) do
@@ -73,6 +75,9 @@ defmodule LawnBot.Adapters.QQ do
   """
   @spec token(String.t()) :: String.t()
   def token(access_token), do: "QQBot #{access_token}"
+
+  @spec bot_name(config()) :: String.t()
+  def bot_name(config), do: "QQ Bot: #{Map.get(config, :name) || config.app_id}"
 
   # 适配器监督树在 Registry 中的名字。
   defp via_tuple(app_id), do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, app_id}}}

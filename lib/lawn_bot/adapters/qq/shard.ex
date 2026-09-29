@@ -127,13 +127,13 @@ defmodule LawnBot.Adapters.QQ.Shard do
         session_id -> {"resuming", resume_payload(access_token, session_id, state.seq)}
       end
 
-    Logger.info("QQ shard #{inspect_shard(state.shard)} #{action}")
+    Logger.info("#{shard_name(state)} #{action}")
     {:reply, {:text, Jason.encode!(payload)}, schedule_heartbeat(%{state | awaiting_ack?: false})}
   end
 
   def handle_info(:heartbeat, state) do
     if state.awaiting_ack? do
-      Logger.warning("ACK missed on QQ shard #{inspect_shard(state.shard)}, reconnecting to resume")
+      Logger.warning("ACK missed on #{shard_name(state)}, reconnecting to resume")
       {:close, %{state | awaiting_ack?: false}}
     else
       state = schedule_heartbeat(%{state | awaiting_ack?: true})
@@ -155,8 +155,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     delay = backoff(status.attempt_number || 1)
 
     Logger.warning(
-      "QQ shard #{inspect_shard(state.shard)} disconnected: #{inspect(status.reason)}, " <>
-        "reconnecting in #{delay}ms"
+      "#{shard_name(state)} disconnected: #{inspect(status.reason)}, reconnecting in #{delay}ms"
     )
 
     Process.sleep(delay)
@@ -170,14 +169,15 @@ defmodule LawnBot.Adapters.QQ.Shard do
     state =
       case payload do
         %{"t" => "READY", "d" => %{"session_id" => session_id}} ->
-          Logger.info("READY on QQ shard #{inspect_shard(state.shard)}, session_id=#{session_id}")
+          Logger.info("READY on #{shard_name(state)}, session_id=#{session_id}")
           %{state | session_id: session_id, seq: Map.get(payload, "s")}
 
         %{"t" => "RESUMED"} ->
-          Logger.info("RESUMED on QQ shard #{inspect_shard(state.shard)}, from seq #{state.seq}")
+          Logger.info("RESUMED on #{shard_name(state)}, from seq #{state.seq}")
           update_seq(state, payload)
 
         _ ->
+          Logger.debug("Payload on #{shard_name(state)}: #{inspect(payload)}")
           update_seq(state, payload)
       end
 
@@ -191,14 +191,14 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   # 服务端要求重连，重连后用 Resume 继续，不丢事件。
   defp handle_payload(%{"op" => 7}, state) do
-    Logger.info("QQ shard #{inspect_shard(state.shard)} asked to reconnect by gateway")
+    Logger.info("#{shard_name(state)} asked to reconnect by gateway")
     {:close, state}
   end
 
   # Identify/Resume 被拒绝：丢弃会话，下次连接重新 Identify。
   defp handle_payload(%{"op" => 9} = payload, state) do
     Logger.warning(
-      "Invalid Session on QQ shard #{inspect_shard(state.shard)}: #{inspect(Map.get(payload, "d"))}, " <>
+      "Invalid Session on #{shard_name(state)}: #{inspect(Map.get(payload, "d"))}, " <>
         "falling back to a fresh Identify"
     )
 
@@ -208,7 +208,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   # Hello：心跳周期以此为准，延时后发起 Identify/Resume。
   defp handle_payload(%{"op" => 10, "d" => %{"heartbeat_interval" => interval}}, state) do
     state = %{state | heartbeat_interval: interval, awaiting_ack?: false}
-    Logger.info("Hello on QQ shard #{inspect_shard(state.shard)}, heartbeat interval #{interval}ms")
+    Logger.info("Hello on #{shard_name(state)}, heartbeat interval #{interval}ms")
     {:ok, schedule_authenticate(state, authenticate_delay(state))}
   end
 
@@ -216,7 +216,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp handle_payload(%{"op" => 11}, state), do: {:ok, %{state | awaiting_ack?: false}}
 
   defp handle_payload(%{"op" => op}, state) do
-    Logger.debug("QQ shard #{inspect_shard(state.shard)} ignoring op=#{op}")
+    Logger.debug("#{shard_name(state)} ignoring op=#{op}")
     {:ok, state}
   end
 
@@ -262,7 +262,9 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp heartbeat_frame(state), do: {:text, Jason.encode!(%{"op" => 1, "d" => state.seq})}
   defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
   defp shard_id(%__MODULE__{shard: [shard_id | _]}), do: shard_id
-  defp inspect_shard([shard_id, shards]), do: "#{shard_id + 1}/#{shards}"
+  @spec shard_name(t()) :: String.t()
+  defp shard_name(%__MODULE__{shard: [shard_id | shards], config: config}),
+    do: "#{QQ.bot_name(config)} Shard #{shard_id + 1}/#{shards}"
 
   # 构造 OpCode 2 Identify 载荷，携带分片参数以启用水平分片。
   @spec identify_payload(String.t(), QQ.config(), shard()) :: map()

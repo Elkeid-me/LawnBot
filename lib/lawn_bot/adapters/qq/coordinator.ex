@@ -69,20 +69,22 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
     case fetch_access_token(app_id, client_secret) do
       {:ok, token} ->
-        Logger.info("Refreshed token for QQ adapter #{app_id}")
+        Logger.info("Refreshed token for #{QQ.bot_name(config)}")
         Enum.each(shard_pids(app_id, gateway.shards), &send(&1, {:qq_token_updated, token}))
         {:noreply, schedule_token_refresh(%{state | token: token})}
 
       {:error, reason} ->
         case reason do
           {:qq_api, code, message} ->
-            Logger.error("Failed to refresh token for QQ adapter #{app_id}: #{code}, #{message}")
+            Logger.error("Failed to refresh token for #{QQ.bot_name(config)}: #{code}, #{message}")
 
           {:unexpected_response, _} ->
-            Logger.error("Failed to refresh token for QQ adapter #{app_id}: unexpected response")
+            Logger.error("Failed to refresh token for #{QQ.bot_name(config)}: unexpected response")
 
           exception ->
-            Logger.error("Failed to refresh token for QQ adapter #{app_id}: #{inspect(exception)}")
+            Logger.error(
+              "Failed to refresh token for #{QQ.bot_name(config)}: #{inspect(exception)}"
+            )
         end
 
         {:noreply,
@@ -115,6 +117,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   # 获取机器人 `access_token` 与 token 刷新时间。
+  @spec fetch_access_token(String.t(), String.t()) :: {:ok, QQ.token()} | {:error, term()}
   defp fetch_access_token(app_id, client_secret) do
     case Req.post(@token_url, json: %{"appId" => app_id, "clientSecret" => client_secret}) do
       {:ok, %Req.Response{body: %{"access_token" => access_token, "expires_in" => expires_in}}}
@@ -136,6 +139,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   # 获取网关地址与建议分片数。
+  @spec fetch_gateway(String.t(), QQ.config()) :: {:ok, gateway()} | {:error, term()}
   defp fetch_gateway(access_token, config) do
     headers = %{"Authorization" => QQ.token(access_token)}
 
@@ -162,14 +166,14 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @spec bootstrap(state()) :: state()
   defp bootstrap(state) do
-    %{config: config} = state
+    config = state.config
     %{app_id: app_id, client_secret: client_secret} = config
 
     with {:ok, token} <- fetch_access_token(app_id, client_secret),
          %{access_token: access_token} = token,
          {:ok, gateway} <- fetch_gateway(access_token, config) do
       %{url: url, shards: shards, remaining: remaining} = gateway
-      Logger.info("Gateway for QQ adapter #{app_id}: #{url} (shards: #{shards})")
+      Logger.info("Gateway for #{QQ.bot_name(config)}, #{url} (shards: #{shards})")
       warn_on_session_limit(remaining, shards)
       state = %{state | token: token, gateway: gateway}
       start_shards(state)
@@ -178,13 +182,13 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       {:error, reason} ->
         case reason do
           {:qq_api, code, message} ->
-            Logger.error("Failed to bootstrap QQ adapter #{app_id}: #{code}, #{message}")
+            Logger.error("Failed to bootstrap #{QQ.bot_name(config)}: #{code}, #{message}")
 
           {:unexpected_response, _} ->
-            Logger.error("Failed to bootstrap QQ adapter #{app_id}: unexpected response")
+            Logger.error("Failed to bootstrap #{QQ.bot_name(config)}: unexpected response")
 
           exception ->
-            Logger.error("Failed to bootstrap QQ adapter #{app_id}: #{inspect(exception)}")
+            Logger.error("Failed to bootstrap #{QQ.bot_name(config)}: #{inspect(exception)}")
         end
 
         Process.send_after(self(), :bootstrap, @bootstrap_retry)
@@ -192,9 +196,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
+  @spec parse_gateway(String.t(), map(), QQ.config()) :: gateway()
   defp parse_gateway(url, body, config) do
     limit = Map.get(body, "session_start_limit") || %{}
-    shards = positive_int(config.shards || Map.get(body, "shards"), 1)
+    shards = positive_int(Map.get(config, :shards) || Map.get(body, "shards"), 1)
 
     %{
       url: url,
@@ -244,8 +249,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       |> Stream.map(fn shard_id -> start_shard(supervisor, config, token, gateway, shard_id) end)
       |> Enum.count(&is_pid/1)
 
-    %{app_id: app_id} = config
-    Logger.info("QQ adapter #{app_id} started #{started}/#{gateway.shards} shard(s)")
+    Logger.info("#{QQ.bot_name(config)} started #{started}/#{gateway.shards} shard(s)")
   end
 
   @spec start_shard(pid(), QQ.config(), QQ.token(), gateway(), non_neg_integer()) :: pid() | nil
@@ -270,7 +274,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         pid
 
       {:error, reason} ->
-        Logger.error("Failed to start QQ shard #{shard_id}: #{inspect(reason)}")
+        Logger.error("Failed to start #{QQ.bot_name(config)} shard #{shard_id}: #{inspect(reason)}")
         nil
     end
   end
@@ -297,7 +301,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp warn_on_session_limit(remaining, shards)
        when is_integer(remaining) and remaining < shards do
     Logger.warning(
-      "QQ session_start_limit.remaining=#{remaining} is lower than shards=#{shards}; " <>
+      "session_start_limit.remaining=#{remaining} is lower than shards=#{shards}; " <>
         "extra Identify requests may be rejected until the limit resets"
     )
   end
