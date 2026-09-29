@@ -1,6 +1,6 @@
 # LawnBot
 
-基于 Elixir 的聊天机器人框架。当前提供 **QQ 官方机器人平台** 的 WebSocket 接入：获取 access_token、按平台建议的分片数建立多条网关连接、完成事件订阅（Intents）、心跳与断线恢复，并把标准化后的事件投递给你的业务进程。
+基于 Elixir 的聊天机器人框架。当前提供 **QQ 官方机器人平台** 的 WebSocket 接入：获取 access_token、按平台建议的分片数建立多条网关连接、完成事件订阅（Intents）、心跳与断线恢复。
 
 ## 特性
 
@@ -23,6 +23,8 @@ LawnBot.Supervisor
 ```
 
 启动流程：`LawnBot.Application` 读取 `:gateways` 配置 → `AdapterSupervisor.start_adapter/2` 启动适配器 → `QQ.Coordinator` 获取 access_token 与 `GET /gateway/bot` → 在适配器的 `DynamicSupervisor` 下启动 `0..shards - 1` 等分片。
+
+模块职责：`LawnBot.Application` 负责应用入口，`LawnBot.AdapterSupervisor` 负责平台适配器，`QQ` 负责单个机器人的监督树与共享协议值，`QQ.Coordinator` 负责引导和 token 生命周期，`QQ.Shard` 负责单条 WebSocket 连接及网关协议。
 
 ### QQ 网关实现细节
 
@@ -65,7 +67,6 @@ config :lawn_bot,
         intents: [:guilds, :guild_members, :public_guild_messages],
         # 可选：覆盖 /gateway/bot 建议的分片数
         # shards: 4,
-        # 可选：事件接收方，见下文「接收事件」
       }
     ]
   }
@@ -86,4 +87,5 @@ mix run --no-halt
 ```bash
 mix test
 mix format --check-formatted        # 代码风格
+mix docs                            # 生成 ExDoc 文档
 ```

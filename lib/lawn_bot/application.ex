@@ -1,4 +1,11 @@
 defmodule LawnBot.Application do
+  @moduledoc """
+  LawnBot 的 OTP 应用入口。
+
+  应用启动 Registry 与平台适配器监督器，并根据 `:gateways` 配置启动各个平台的适配器。
+  未配置任何网关时，应用会返回 `{:error, :no_gateways_configured}`。
+  """
+
   use Application
   require Logger
 

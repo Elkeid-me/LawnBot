@@ -1,10 +1,13 @@
 defmodule LawnBot.AdapterSupervisor do
+  @moduledoc """
+  管理所有平台适配器的动态监督器。
+
+  平台通过 `:gateways` 配置中的键映射到适配器模块；目前支持 `:qq`。
+  """
+
   use DynamicSupervisor
   require Logger
 
-  @doc """
-  平台到适配器模块映射
-  """
   @adapter_mapping %{qq: LawnBot.Adapters.QQ}
 
   def start_link(init_arg) do
@@ -15,6 +18,7 @@ defmodule LawnBot.AdapterSupervisor do
   @impl true
   def init(_init_arg), do: DynamicSupervisor.init(strategy: :one_for_one)
 
+  @doc "按平台键启动适配器；未知平台返回 `{:error, :not_implemented}`。"
   @spec start_adapter(:qq | :lark | atom(), map()) ::
           :ignore | {:error, any()} | {:ok, pid()} | {:ok, pid(), any()}
   def start_adapter(platform, config) do
