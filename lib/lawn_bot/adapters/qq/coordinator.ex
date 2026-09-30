@@ -58,8 +58,8 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @doc "异步启动 Coordinator 进程，避免阻塞 QQ 适配器监督树的启动。"
   @impl true
-  @spec handle_continue(:bootstrap, state()) :: {:noreply, state()}
-  def handle_continue(:bootstrap, state), do: {:noreply, bootstrap(state)}
+  @spec handle_continue(:bootstrap | :bootstrap, state()) :: {:noreply, state()}
+  def handle_continue(:bootstrap, state), do: bootstrap(state)
 
   @impl true
   @spec handle_info(:refresh_token | term(), state()) :: {:noreply, state()}
@@ -92,6 +92,8 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
+  # 重试启动
+  def handle_info(:bootstrap, state), do: bootstrap(state)
   def handle_info(_message, state), do: {:noreply, state}
 
   # Coordinator 进程在 Registry 中的名字。
@@ -114,6 +116,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       [{pid, _}] -> pid
       [] -> nil
     end)
+    |> Enum.reject(&is_pid/1)
   end
 
   # 获取机器人 `access_token` 与 token 刷新时间。
@@ -164,7 +167,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
-  @spec bootstrap(state()) :: state()
+  @spec bootstrap(state()) :: {:noreply, state()}
   defp bootstrap(state) do
     config = state.config
     %{app_id: app_id, client_secret: client_secret} = config
@@ -174,10 +177,12 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
          {:ok, gateway} <- fetch_gateway(access_token, config) do
       %{url: url, shards: shards, remaining: remaining} = gateway
       Logger.info("Gateway for #{QQ.bot_name(config)}, #{url} (shards: #{shards})")
+      Logger.debug("Token: #{access_token}")
       warn_on_session_limit(remaining, shards)
       state = %{state | token: token, gateway: gateway}
       start_shards(state)
-      schedule_token_refresh(state)
+      state = schedule_token_refresh(state)
+      {:noreply, state}
     else
       {:error, reason} ->
         case reason do
@@ -192,7 +197,8 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         end
 
         Process.send_after(self(), :bootstrap, @bootstrap_retry)
-        %{state | token: nil}
+        state = %{state | token: nil}
+        {:noreply, state}
     end
   end
 

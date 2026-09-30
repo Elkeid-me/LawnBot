@@ -176,8 +176,12 @@ defmodule LawnBot.Adapters.QQ.Shard do
           Logger.info("RESUMED on #{shard_name(state)}, from seq #{state.seq}")
           update_seq(state, payload)
 
+        %{"t" => event} ->
+          Logger.debug("Unhandled event #{event} on #{shard_name(state)}: #{inspect(payload)}")
+          update_seq(state, payload)
+
         _ ->
-          Logger.debug("Payload on #{shard_name(state)}: #{inspect(payload)}")
+          Logger.debug("Unknown payload on #{shard_name(state)}: #{inspect(payload)}")
           update_seq(state, payload)
       end
 
@@ -263,7 +267,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
   defp shard_id(%__MODULE__{shard: [shard_id | _]}), do: shard_id
   @spec shard_name(t()) :: String.t()
-  defp shard_name(%__MODULE__{shard: [shard_id | shards], config: config}),
+  defp shard_name(%__MODULE__{shard: [shard_id, shards], config: config}),
     do: "#{QQ.bot_name(config)} Shard #{shard_id + 1}/#{shards}"
 
   # 构造 OpCode 2 Identify 载荷，携带分片参数以启用水平分片。
