@@ -177,7 +177,6 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
          {:ok, gateway} <- fetch_gateway(access_token, config) do
       %{url: url, shards: shards, remaining: remaining} = gateway
       Logger.info("Gateway for #{QQ.bot_name(config)}, #{url} (shards: #{shards})")
-      Logger.debug("Token: #{access_token}")
       warn_on_session_limit(remaining, shards)
       state = %{state | token: token, gateway: gateway}
       start_shards(state)
