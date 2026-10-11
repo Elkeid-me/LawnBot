@@ -107,16 +107,15 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp shard_pids(app_id, shard_count) do
     0..(shard_count - 1)
     |> Stream.map(fn shard_id ->
-      Registry.lookup(
+      case Registry.lookup(
         LawnBot.AdapterRegistry,
         LawnBot.Adapters.QQ.shard_registry_key(app_id, shard_id)
-      )
-    end)
-    |> Enum.map(fn
+           ) do
       [{pid, _}] -> pid
       [] -> nil
+      end
     end)
-    |> Enum.reject(&is_pid/1)
+    |> Enum.filter(&is_pid/1)
   end
 
   # 获取机器人 `access_token` 与 token 刷新时间。

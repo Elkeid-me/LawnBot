@@ -142,6 +142,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   def handle_info({:qq_token_updated, token}, state) do
+    Logger.info("#{shard_name(state)} received updated QQ token")
     {:ok, %{state | token: token}}
   end
 
