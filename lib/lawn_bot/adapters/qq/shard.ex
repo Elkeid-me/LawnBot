@@ -101,7 +101,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @impl true
   @spec handle_frame(WebSockex.frame(), t()) :: {:ok, t()} | {:reply, {:text, String.t()}, t()}
   def handle_frame({:text, text}, state) do
-    case Jason.decode(text) do
+    case JSON.decode(text) do
       {:ok, payload} when is_map(payload) ->
         handle_payload(payload, state)
 
@@ -128,7 +128,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
       end
 
     Logger.info("#{shard_name(state)} #{action}")
-    {:reply, {:text, Jason.encode!(payload)}, schedule_heartbeat(%{state | awaiting_ack?: false})}
+    {:reply, {:text, JSON.encode!(payload)}, schedule_heartbeat(%{state | awaiting_ack?: false})}
   end
 
   def handle_info(:heartbeat, state) do
@@ -228,12 +228,10 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp via_tuple(app_id, shard_id),
     do: {:via, Registry, {LawnBot.AdapterRegistry, QQ.shard_registry_key(app_id, shard_id)}}
 
-  defp update_seq(state, payload) do
-    case Map.get(payload, "s") do
-      seq when is_integer(seq) -> %{state | seq: seq}
-      _ -> state
-    end
-  end
+  @spec update_seq(t(), nil | non_neg_integer() | map()) :: t()
+  defp update_seq(state, nil), do: state
+  defp update_seq(state, seq) when is_integer(seq), do: %{state | seq: seq}
+  defp update_seq(state, payload) when is_map(payload), do: update_seq(Map.get(payload, "s"), state)
 
   # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
   defp authenticate_delay(state) do
@@ -264,12 +262,12 @@ defmodule LawnBot.Adapters.QQ.Shard do
     end
   end
 
-  defp heartbeat_frame(state), do: {:text, Jason.encode!(%{"op" => 1, "d" => state.seq})}
+  defp heartbeat_frame(state), do: {:text, JSON.encode!(%{"op" => 1, "d" => state.seq})}
   defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
   defp shard_id(%__MODULE__{shard: [shard_id | _]}), do: shard_id
   @spec shard_name(t()) :: String.t()
   defp shard_name(%__MODULE__{shard: [shard_id, shards], config: config}),
-    do: "#{QQ.bot_name(config)} Shard #{shard_id + 1}/#{shards}"
+    do: "#{QQ.bot_name(config)} shard #{shard_id + 1}/#{shards}"
 
   # 构造 OpCode 2 Identify 载荷，携带分片参数以启用水平分片。
   @spec identify_payload(String.t(), QQ.config(), shard()) :: map()

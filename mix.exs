@@ -29,7 +29,6 @@ defmodule LawnBot.MixProject do
   defp deps do
     [
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
-      {:jason, "~> 1.4"},
       {:req, "~> 0.7.5"},
       {:websockex, "~> 0.5.1"}
     ]

@@ -56,7 +56,7 @@ defmodule LawnBot.Adapters.QQ.ShardTest do
     assert {:reply, {:text, response}, updated} =
              Shard.handle_frame({:text, ~s({"op":1})}, shard_state)
 
-    assert Jason.decode!(response) == %{"op" => 1, "d" => 12}
+    assert JSON.decode!(response) == %{"op" => 1, "d" => 12}
     assert updated.awaiting_ack?
   end
 
@@ -75,7 +75,7 @@ defmodule LawnBot.Adapters.QQ.ShardTest do
     shard_state = state(config: Map.put(@config, :intents, [:guilds, :group_and_c2c]))
 
     assert {:reply, {:text, response}, updated} = Shard.handle_info(:authenticate, shard_state)
-    payload = Jason.decode!(response)
+    payload = JSON.decode!(response)
 
     assert payload["op"] == 2
     assert payload["d"]["token"] == "QQBot access-token"
