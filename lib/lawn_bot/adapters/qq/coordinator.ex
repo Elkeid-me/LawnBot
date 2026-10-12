@@ -108,11 +108,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     0..(shard_count - 1)
     |> Stream.map(fn shard_id ->
       case Registry.lookup(
-        LawnBot.AdapterRegistry,
-        LawnBot.Adapters.QQ.shard_registry_key(app_id, shard_id)
+             LawnBot.AdapterRegistry,
+             LawnBot.Adapters.QQ.shard_registry_key(app_id, shard_id)
            ) do
-      [{pid, _}] -> pid
-      [] -> nil
+        [{pid, _}] -> pid
+        [] -> nil
       end
     end)
     |> Enum.filter(&is_pid/1)

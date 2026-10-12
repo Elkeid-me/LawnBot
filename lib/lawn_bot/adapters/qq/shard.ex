@@ -231,7 +231,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @spec update_seq(t(), nil | non_neg_integer() | map()) :: t()
   defp update_seq(state, nil), do: state
   defp update_seq(state, seq) when is_integer(seq), do: %{state | seq: seq}
-  defp update_seq(state, payload) when is_map(payload), do: update_seq(Map.get(payload, "s"), state)
+  defp update_seq(state, payload) when is_map(payload), do: update_seq(state, Map.get(payload, "s"))
 
   # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
   defp authenticate_delay(state) do
