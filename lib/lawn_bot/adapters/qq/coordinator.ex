@@ -31,28 +31,20 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
           remaining: non_neg_integer() | nil
         }
   @type state() :: %{
-          supervisor: pid(),
           config: QQ.config(),
           token: QQ.token() | nil,
           gateway: gateway() | nil,
           refresh_ref: reference() | nil
         }
 
-  @spec start_link({pid(), QQ.config()}) :: {:ok, pid()} | {:error, term()}
-  def start_link({supervisor, %{app_id: app_id} = config}) do
-    GenServer.start_link(__MODULE__, {supervisor, config}, name: via_tuple(app_id))
-  end
-
-  def child_spec({supervisor, %{app_id: app_id} = config}) do
-    %{
-      id: {__MODULE__, app_id},
-      start: {__MODULE__, :start_link, [{supervisor, config}]}
-    }
-  end
+  @spec start_link(QQ.config()) :: {:ok, pid()} | {:error, term()}
+  def start_link(config),
+    do: GenServer.start_link(__MODULE__, config, name: via_tuple(config.app_id))
 
   @impl true
-  def init({supervisor, config}) do
-    state = %{supervisor: supervisor, config: config, token: nil, gateway: nil, refresh_ref: nil}
+  @spec start_link(QQ.config()) :: {:ok, state(), {:continue, :bootstrap}}
+  def init(config) do
+    state = %{config: config, token: nil, gateway: nil, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
   end
 
@@ -64,13 +56,16 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @impl true
   @spec handle_info(:refresh_token | term(), state()) :: {:noreply, state()}
   def handle_info(:refresh_token, state) do
-    %{config: config, gateway: gateway} = state
+    config = state.config
     %{app_id: app_id, client_secret: client_secret} = config
 
     case fetch_access_token(app_id, client_secret) do
       {:ok, token} ->
         Logger.info("Refreshed token for #{QQ.bot_name(config)}")
-        Enum.each(shard_pids(app_id, gateway.shards), &send(&1, {:qq_token_updated, token}))
+
+        DynamicSupervisor.which_children(QQ.shard_supervisor_name(app_id))
+        |> Enum.each(fn {_, pid, _, _} -> send(pid, {:qq_token_updated, token}) end)
+
         {:noreply, schedule_token_refresh(%{state | token: token})}
 
       {:error, reason} ->
@@ -99,24 +94,6 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   # Coordinator 进程在 Registry 中的名字。
   defp via_tuple(app_id),
     do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.Coordinator, app_id}}}
-
-  # 获取当前存活的分片进程，供 Coordinator 广播 token 刷新等消息。
-  #
-  # 通过 Registry 查找而不是缓存 pid，分片被监督树重启后仍然能找到新进程。
-  @spec shard_pids(String.t(), pos_integer()) :: [pid()]
-  defp shard_pids(app_id, shard_count) do
-    0..(shard_count - 1)
-    |> Stream.map(fn shard_id ->
-      case Registry.lookup(
-             LawnBot.AdapterRegistry,
-             LawnBot.Adapters.QQ.shard_registry_key(app_id, shard_id)
-           ) do
-        [{pid, _}] -> pid
-        [] -> nil
-      end
-    end)
-    |> Enum.filter(&is_pid/1)
-  end
 
   # 获取机器人 `access_token` 与 token 刷新时间。
   @spec fetch_access_token(String.t(), String.t()) :: {:ok, QQ.token()} | {:error, term()}
@@ -247,17 +224,17 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp non_negative_int(_value), do: nil
 
   @spec start_shards(state()) :: :ok
-  defp start_shards(%{supervisor: supervisor, config: config, token: token, gateway: gateway}) do
+  defp start_shards(%{config: config, token: token, gateway: gateway}) do
     started =
       0..(gateway.shards - 1)
-      |> Stream.map(fn shard_id -> start_shard(supervisor, config, token, gateway, shard_id) end)
+      |> Stream.map(fn shard_id -> start_shard(config, token, gateway, shard_id) end)
       |> Enum.count(&is_pid/1)
 
     Logger.info("#{QQ.bot_name(config)} started #{started}/#{gateway.shards} shard(s)")
   end
 
-  @spec start_shard(pid(), QQ.config(), QQ.token(), gateway(), non_neg_integer()) :: pid() | nil
-  defp start_shard(supervisor, config, token, gateway, shard_id) do
+  @spec start_shard(QQ.config(), QQ.token(), gateway(), non_neg_integer()) :: pid() | nil
+  defp start_shard(%{app_id: app_id} = config, token, gateway, shard_id) do
     %{url: url, shards: shards, max_concurrency: max_concurrency} = gateway
 
     shard_state = %QQ.Shard{
@@ -268,7 +245,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       token: token
     }
 
-    case DynamicSupervisor.start_child(supervisor, {QQ.Shard, shard_state}) do
+    case DynamicSupervisor.start_child(QQ.shard_supervisor_name(app_id), {QQ.Shard, shard_state}) do
       {:ok, pid} ->
         pid
 

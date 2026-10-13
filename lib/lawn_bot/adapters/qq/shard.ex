@@ -33,6 +33,11 @@ defmodule LawnBot.Adapters.QQ.Shard do
     awaiting_ack?: false
   ]
 
+  @typedoc """
+  分片参数，形如 `[shard_id, total_shards]`，用于 Identify 时启用水平分片。
+
+  其中 `0 <= shard_id < total_shards`。
+  """
   @type shard() :: [non_neg_integer()]
 
   @type t() :: %__MODULE__{
@@ -71,7 +76,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @max_backoff 60_000
 
   @spec start_link(t()) :: {:ok, pid()} | {:error, term()}
-  def start_link(%__MODULE__{} = state) do
+  def start_link(state) do
     opts = [
       async: true,
       handle_initial_conn_failure: true,
@@ -81,7 +86,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     WebSockex.start_link(state.gateway_url, __MODULE__, state, opts)
   end
 
-  def child_spec(%__MODULE__{} = state) do
+  def child_spec(state) do
     %{
       id: {__MODULE__, shard_id(state)},
       start: {__MODULE__, :start_link, [state]}
@@ -226,7 +231,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp via_tuple(app_id, shard_id),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, QQ.shard_registry_key(app_id, shard_id)}}
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, app_id, shard_id}}}
 
   @spec update_seq(t(), nil | non_neg_integer() | map()) :: t()
   defp update_seq(state, nil), do: state
@@ -265,6 +270,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp heartbeat_frame(state), do: {:text, JSON.encode!(%{"op" => 1, "d" => state.seq})}
   defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
   defp shard_id(%__MODULE__{shard: [shard_id, _]}), do: shard_id
+
   @spec shard_name(t()) :: String.t()
   defp shard_name(%__MODULE__{shard: [shard_id, shards], config: config}),
     do: "#{QQ.bot_name(config)} shard #{shard_id + 1}/#{shards}"

@@ -1,14 +1,6 @@
 defmodule LawnBot.Adapters.QQ do
   @moduledoc """
-  QQ 机器人适配器：一个管理 WebSocket 分片连接的 DynamicSupervisor。
-
-  生命周期：
-
-  1. 本模块作为 DynamicSupervisor 挂在 `LawnBot.AdapterSupervisor` 下；
-  2. 启动时先拉起 `LawnBot.Adapters.QQ.Coordinator` 子进程；
-  3. Coordinator 获取 access_token，并调用 `GET /gateway/bot` 拿到网关地址与建议分片数；
-  4. 拿到 token 后在本监督树下按分片数启动 `LawnBot.Adapters.QQ.Shard` 连接进程，
-     由各分片自行完成 Identify/Resume、心跳与事件订阅。
+  QQ 机器人适配器。
 
   ## 配置
 
@@ -21,7 +13,7 @@ defmodule LawnBot.Adapters.QQ do
   - `:os` / `:browser` / `:device` - Identify 时的客户端信息，默认分别为当前 OS、"LawnBot"、"LawnBot"。
   """
 
-  use DynamicSupervisor
+  use Supervisor
   require Logger
 
   @type config() :: %{
@@ -45,15 +37,8 @@ defmodule LawnBot.Adapters.QQ do
   """
   @spec start_link(config()) :: {:ok, pid()} | {:error, term()} | :ignore
   def start_link(%{app_id: app_id, client_secret: client_secret} = config)
-      when is_binary(app_id) and is_binary(client_secret) and app_id != "" and client_secret != "" do
-    Logger.info("Starting")
-    Logger.info("Starting #{bot_name(config)}")
-
-    with {:ok, pid} <- DynamicSupervisor.start_link(__MODULE__, config, name: via_tuple(app_id)),
-         {:ok, _pid} <- start_coordinator(pid, config) do
-      {:ok, pid}
-    end
-  end
+      when is_binary(app_id) and is_binary(client_secret) and app_id != "" and client_secret != "",
+      do: Supervisor.start_link(__MODULE__, config, name: via_tuple(config.app_id))
 
   def start_link(_config) do
     Logger.warning("Skipping QQ adapter: no app_id or client_secret set.")
@@ -61,39 +46,35 @@ defmodule LawnBot.Adapters.QQ do
   end
 
   @impl true
-  def init(_init_arg),
-    # 单个分片反复崩溃时让整棵 QQ 适配器树重启，而不是无限拉起坏掉的连接。
-    do: DynamicSupervisor.init(strategy: :one_for_one, max_restarts: 3, max_seconds: 5)
+  def init(config) do
+    children = [
+      {LawnBot.Adapters.QQ.Coordinator, config},
+      {DynamicSupervisor,
+       strategy: :one_for_one,
+       max_restarts: 3,
+       max_seconds: 30,
+       name: shard_supervisor_name(config.app_id)}
+    ]
 
-  @doc "获取 Shard 在 Registry 中的名字，供 Coordinator 广播 token 刷新等消息。"
-  @spec shard_registry_key(String.t(), non_neg_integer()) ::
-          {module(), String.t(), non_neg_integer()}
-  def shard_registry_key(app_id, shard_id), do: {__MODULE__, app_id, shard_id}
+    Logger.info("Starting #{bot_name(config)}")
+    Supervisor.init(children, strategy: :one_for_all, max_restarts: 3, max_seconds: 30)
+  end
 
-  @doc """
-  构造机器人 token。形如 `QQBot <access_token>`。
-  """
+  @doc "返回分片监督树的名字，用于 `DynamicSupervisor.which_children/1` 等。"
+  @spec shard_supervisor_name(String.t()) ::
+          {:via, Registry, {Registry.registry(), {module(), String.t()}}}
+  def shard_supervisor_name(app_id),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, app_id}}}
+
+  @doc "构造机器人 token。形如 `QQBot <access_token>`。"
   @spec token(String.t()) :: String.t()
   def token(access_token), do: "QQBot #{access_token}"
 
+  @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`，若未配置 `:name` 则使用 `app_id`。"
   @spec bot_name(config()) :: String.t()
   def bot_name(config), do: "QQ Bot: #{Map.get(config, :name) || config.app_id}"
 
+  @spec via_tuple(String.t()) :: {:via, Registry, {Registry.registry(), {module(), String.t()}}}
   # 适配器监督树在 Registry 中的名字。
   defp via_tuple(app_id), do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, app_id}}}
-
-  @spec start_coordinator(pid(), config()) :: {:ok, pid()} | {:error, term()}
-  defp start_coordinator(supervisor_pid, config) do
-    spec = {LawnBot.Adapters.QQ.Coordinator, {supervisor_pid, config}}
-
-    case DynamicSupervisor.start_child(supervisor_pid, spec) do
-      {:ok, pid} ->
-        {:ok, pid}
-
-      {:error, reason} ->
-        Logger.error("Failed to start QQ coordinator: #{inspect(reason)}")
-        DynamicSupervisor.stop(supervisor_pid, :shutdown)
-        {:error, reason}
-    end
-  end
 end
