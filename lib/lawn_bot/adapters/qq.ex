@@ -49,6 +49,7 @@ defmodule LawnBot.Adapters.QQ do
   def init(config) do
     children = [
       {LawnBot.Adapters.QQ.Coordinator, config},
+      {Task.Supervisor, name: task_supervisor_name(config.app_id)},
       {DynamicSupervisor,
        strategy: :one_for_one,
        max_restarts: 3,
@@ -60,11 +61,17 @@ defmodule LawnBot.Adapters.QQ do
     Supervisor.init(children, strategy: :one_for_all, max_restarts: 3, max_seconds: 30)
   end
 
-  @doc "返回分片监督树的名字，用于 `DynamicSupervisor.which_children/1` 等。"
+  @doc "分片监督树的名字，用于 `DynamicSupervisor.which_children/1` 等。"
   @spec shard_supervisor_name(String.t()) ::
-          {:via, Registry, {Registry.registry(), {module(), String.t()}}}
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), String.t()}}}
   def shard_supervisor_name(app_id),
     do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, app_id}}}
+
+  @doc "任务监督树的名字。"
+  @spec task_supervisor_name(String.t()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), String.t()}}}
+  def task_supervisor_name(app_id),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, app_id}}}
 
   @doc "构造机器人 token。形如 `QQBot <access_token>`。"
   @spec token(String.t()) :: String.t()
@@ -73,6 +80,49 @@ defmodule LawnBot.Adapters.QQ do
   @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`，若未配置 `:name` 则使用 `app_id`。"
   @spec bot_name(config()) :: String.t()
   def bot_name(config), do: "QQ Bot: #{Map.get(config, :name) || config.app_id}"
+
+  @doc "将 QQ 网关事件 payload 转换为 LawnBot 事件结构体。"
+  @spec to_event(map()) :: LawnBot.Event.t()
+  def to_event(payload) do
+    {message_type, session_type} =
+      case payload["t"] do
+        "C2C_MESSAGE_CREATE" -> {:normal, :c2c}
+        "GROUP_MESSAGE_CREATE" -> {:normal, :group}
+        "GROUP_AT_MESSAGE_CREATE" -> {:normal, :group}
+      end
+
+    message_id = payload["d"]["id"]
+
+    session_id =
+      case session_type do
+        :c2c -> payload["d"]["author"]["user_openid"]
+        :group -> payload["d"]["group_openid"]
+      end
+
+    author_id =
+      case session_type do
+        :c2c -> payload["d"]["author"]["user_openid"]
+        :group -> payload["d"]["author"]["member_openid"]
+      end
+
+    nickname =
+      case session_type do
+        :c2c -> nil
+        :group -> payload["d"]["author"]["username"]
+      end
+
+    content = payload["d"]["content"]
+
+    %LawnBot.Event{
+      session_type: session_type,
+      session_id: session_id,
+      message_type: message_type,
+      message_id: message_id,
+      author: %{id: author_id, nickname: nickname},
+      content: content,
+      extra: %{}
+    }
+  end
 
   @spec via_tuple(String.t()) :: {:via, Registry, {Registry.registry(), {module(), String.t()}}}
   # 适配器监督树在 Registry 中的名字。

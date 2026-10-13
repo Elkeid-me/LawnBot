@@ -176,14 +176,14 @@ defmodule LawnBot.Adapters.QQ.Shard do
       case payload do
         %{"t" => "READY", "d" => %{"session_id" => session_id}} ->
           Logger.info("READY on #{shard_name(state)}, session_id=#{session_id}")
-          %{state | session_id: session_id, seq: Map.get(payload, "s")}
+          %{state | session_id: session_id, seq: Map.fetch!(payload, "s")}
 
         %{"t" => "RESUMED"} ->
           Logger.info("RESUMED on #{shard_name(state)}, from seq #{state.seq}")
           update_seq(state, payload)
 
-        %{"t" => event} ->
-          Logger.debug("Unhandled event #{event} on #{shard_name(state)}: #{inspect(payload)}")
+        %{"t" => _} ->
+          Logger.debug("Unhandled event on #{shard_name(state)}: #{inspect(QQ.to_event(payload))}")
           update_seq(state, payload)
 
         _ ->
@@ -235,8 +235,17 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   @spec update_seq(t(), nil | non_neg_integer() | map()) :: t()
   defp update_seq(state, nil), do: state
-  defp update_seq(state, seq) when is_integer(seq), do: %{state | seq: seq}
-  defp update_seq(state, payload) when is_map(payload), do: update_seq(state, Map.get(payload, "s"))
+
+  defp update_seq(state, seq) when is_integer(seq) do
+    case state.seq do
+      nil -> %{state | seq: seq}
+      old_seq when is_integer(old_seq) and old_seq < seq -> %{state | seq: seq}
+      _ -> state
+    end
+  end
+
+  defp update_seq(state, payload) when is_map(payload),
+    do: update_seq(state, Map.fetch!(payload, "s"))
 
   # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
   defp authenticate_delay(state) do
