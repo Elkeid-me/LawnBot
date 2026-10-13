@@ -264,7 +264,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   defp heartbeat_frame(state), do: {:text, JSON.encode!(%{"op" => 1, "d" => state.seq})}
   defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
-  defp shard_id(%__MODULE__{shard: [shard_id | _]}), do: shard_id
+  defp shard_id(%__MODULE__{shard: [shard_id, _]}), do: shard_id
   @spec shard_name(t()) :: String.t()
   defp shard_name(%__MODULE__{shard: [shard_id, shards], config: config}),
     do: "#{QQ.bot_name(config)} shard #{shard_id + 1}/#{shards}"
