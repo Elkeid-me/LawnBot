@@ -15,9 +15,10 @@ defmodule LawnBot.Adapters.QQ.Shard do
   """
 
   use WebSockex
-  require Logger
 
   alias LawnBot.Adapters.QQ
+
+  require Logger
 
   defstruct [
     :config,
@@ -151,6 +152,11 @@ defmodule LawnBot.Adapters.QQ.Shard do
     {:ok, %{state | token: token}}
   end
 
+  def handle_info(%LawnBot.Reply{}, state) do
+    Logger.debug("Received reply from handler on #{shard_name(state)}")
+    {:ok, state}
+  end
+
   def handle_info(_message, state), do: {:ok, state}
 
   @impl true
@@ -183,7 +189,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
           update_seq(state, payload)
 
         %{"t" => _} ->
-          Logger.debug("Unhandled event on #{shard_name(state)}: #{inspect(QQ.to_event(payload))}")
+          handle_event(state, payload)
           update_seq(state, payload)
 
         _ ->
@@ -191,7 +197,6 @@ defmodule LawnBot.Adapters.QQ.Shard do
           update_seq(state, payload)
       end
 
-    # todo
     {:ok, state}
   end
 
@@ -342,5 +347,33 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp normalize_intents(other) do
     Logger.warning("Ignoring invalid QQ intents: #{inspect(other)}")
     normalize_intents(@default_intents)
+  end
+
+  defp handle_event(state, payload) do
+    pid = self()
+
+    case Map.get(state.config, :handler) do
+      nil ->
+        Logger.debug("No handler configured, ignoring event: #{inspect(payload)}")
+
+      {:func, handler} when is_function(handler) ->
+        Task.Supervisor.start_child(QQ.task_supervisor_name(state.config.app_id), fn ->
+          reply = payload |> QQ.to_event() |> handler.()
+          send(pid, reply)
+        end)
+
+      {:module, module} when is_atom(module) ->
+        Task.Supervisor.start_child(QQ.task_supervisor_name(state.config.app_id), fn ->
+          event = QQ.to_event(payload)
+          reply = apply(module, :handle_event, [event])
+          send(pid, reply)
+        end)
+
+      {:via_session_id, handlers} when is_map(handlers) ->
+        nil
+
+      {:via_func, handlers} when is_function(handlers) ->
+        nil
+    end
   end
 end

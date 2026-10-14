@@ -14,9 +14,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   """
 
   use GenServer
-  require Logger
 
   alias LawnBot.Adapters.QQ
+
+  require Logger
 
   @bootstrap_retry 5_000
   @token_refresh_retry 60_000
@@ -63,7 +64,9 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       {:ok, token} ->
         Logger.info("Refreshed token for #{QQ.bot_name(config)}")
 
-        DynamicSupervisor.which_children(QQ.shard_supervisor_name(app_id))
+        app_id
+        |> QQ.shard_supervisor_name()
+        |> DynamicSupervisor.which_children()
         |> Enum.each(fn {_, pid, _, _} -> send(pid, {:qq_token_updated, token}) end)
 
         {:noreply, schedule_token_refresh(%{state | token: token})}
@@ -279,8 +282,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   @spec warn_on_session_limit(non_neg_integer(), pos_integer()) :: :ok
-  defp warn_on_session_limit(remaining, shards)
-       when is_integer(remaining) and remaining < shards do
+  defp warn_on_session_limit(remaining, shards) when is_integer(remaining) and remaining < shards do
     Logger.warning(
       "session_start_limit.remaining=#{remaining} is lower than shards=#{shards}; " <>
         "extra Identify requests may be rejected until the limit resets"

@@ -14,6 +14,7 @@ defmodule LawnBot.Adapters.QQ do
   """
 
   use Supervisor
+
   require Logger
 
   @type config() :: %{
@@ -24,7 +25,12 @@ defmodule LawnBot.Adapters.QQ do
           optional(:browser) => String.t(),
           optional(:device) => String.t(),
           optional(:intents) => non_neg_integer() | [atom()],
-          optional(:shards) => pos_integer()
+          optional(:shards) => pos_integer(),
+          optional(:handler) =>
+            {:func, (LawnBot.Event.t() -> LawnBot.Reply.t())}
+            | {:module, module()}
+            | {:via_session_id, map()}
+            | {:via_func, fun()}
         }
 
   @type token() :: %{access_token: String.t(), expires_in: pos_integer()}

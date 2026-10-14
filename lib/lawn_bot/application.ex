@@ -7,6 +7,7 @@ defmodule LawnBot.Application do
   """
 
   use Application
+
   require Logger
 
   @impl true
@@ -35,4 +36,38 @@ defmodule LawnBot.Application do
 
   defp start_adapters({platform, configs}) when is_list(configs),
     do: Enum.each(configs, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
+end
+
+defmodule LawnBot.Event do
+  @moduledoc "LawnBot 事件结构体。"
+  defstruct [:session_type, :session_id, :message_type, :message_id, :author, :content, :extra]
+
+  @type t :: %__MODULE__{
+          session_type: :group | :c2c,
+          session_id: String.t(),
+          message_type: :normal | :new_friend,
+          message_id: String.t(),
+          author: %{id: String.t(), nickname: String.t() | nil},
+          content: term(),
+          extra: map()
+        }
+end
+
+defmodule LawnBot.Reply do
+  @moduledoc "LawnBot 回复结构体。"
+  defstruct [:action, :event]
+
+  @type t :: %__MODULE__{
+          action: :reply | :ignore,
+          event: LawnBot.Event.t() | nil
+        }
+end
+
+defmodule LawnBot.Handler do
+  @moduledoc """
+  LawnBot 事件处理器行为定义。
+
+  事件处理器负责接收 LawnBot 事件并返回相应的回复。
+  """
+  @callback handle_event(event :: LawnBot.Event.t()) :: LawnBot.Reply.t()
 end

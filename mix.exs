@@ -28,8 +28,10 @@ defmodule LawnBot.MixProject do
 
   defp deps do
     [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:req, "~> 0.7.5"},
+      {:styler, "~> 1.12", only: [:dev, :test], runtime: false},
       {:websockex, "~> 0.5.1"}
     ]
   end

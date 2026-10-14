@@ -6,6 +6,7 @@ defmodule LawnBot.AdapterSupervisor do
   """
 
   use DynamicSupervisor
+
   require Logger
 
   @adapter_mapping %{qq: LawnBot.Adapters.QQ}
@@ -22,9 +23,10 @@ defmodule LawnBot.AdapterSupervisor do
   @spec start_adapter(:qq | :lark | atom(), map()) ::
           :ignore | {:error, any()} | {:ok, pid()} | {:ok, pid(), any()}
   def start_adapter(platform, config) do
-    with {:ok, spec} <- adapter_child_spec(platform, config) do
-      DynamicSupervisor.start_child(__MODULE__, spec)
-    else
+    case adapter_child_spec(platform, config) do
+      {:ok, spec} ->
+        DynamicSupervisor.start_child(__MODULE__, spec)
+
       _ ->
         Logger.error("Cannot find adapter for platform: #{platform}.")
         {:error, :not_implemented}
