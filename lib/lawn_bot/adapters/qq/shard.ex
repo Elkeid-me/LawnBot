@@ -152,8 +152,15 @@ defmodule LawnBot.Adapters.QQ.Shard do
     {:ok, %{state | token: token}}
   end
 
-  def handle_info(%LawnBot.Reply{}, state) do
-    Logger.debug("Received reply from handler on #{shard_name(state)}")
+  def handle_info(%LawnBot.Reply{action: action} = reply, state)
+      when action == :reply or action == :new_message do
+    Task.Supervisor.start_child(
+      QQ.task_supervisor_name(state.config.app_id),
+      QQ.Shard,
+      :send_message,
+      [reply, state]
+    )
+
     {:ok, state}
   end
 
@@ -375,5 +382,41 @@ defmodule LawnBot.Adapters.QQ.Shard do
       {:via_func, handlers} when is_function(handlers) ->
         nil
     end
+  end
+
+  @spec send_message(LawnBot.Reply.t(), t()) :: :ok
+  def send_message(%LawnBot.Reply{action: action, event: event}, state) do
+    token = state.token.access_token
+    session_id = event.session_id
+
+    url =
+      case(event.session_type) do
+        :group -> "https://api.bot.qq.com/v2/groups/#{session_id}/messages"
+        :c2c -> "https://api.bot.qq.com/v2/users/#{session_id}/messages"
+      end
+
+    message =
+      case action do
+        :reply -> event |> build_message_content() |> Map.put("msg_id", event.message_id)
+        :new_message -> build_message_content(event)
+        _ -> nil
+      end
+
+    Req.post(url,
+      json: message,
+      headers: %{"Authorization" => QQ.token(token)},
+      finch: [name: LawnBot.Finch, pool_tag: state.config.app_id]
+    )
+
+    :ok
+  end
+
+  defp build_message_content(event) do
+    # 构建消息内容，根据 event 的类型和内容生成适合 QQ API 的消息格式
+    # 这里可以根据实际需求进行实现
+    %{
+      "msg_type" => 0,
+      "content" => event.content
+    }
   end
 end

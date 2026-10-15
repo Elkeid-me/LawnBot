@@ -56,6 +56,10 @@ defmodule LawnBot.Adapters.QQ do
     children = [
       {LawnBot.Adapters.QQ.Coordinator, config},
       {Task.Supervisor, name: task_supervisor_name(config.app_id)},
+      {Finch.Pool,
+       finch: LawnBot.Finch,
+       pool: Finch.Pool.new("https://api.bot.qq.com", tag: config.app_id),
+       size: Map.get(config, :shards, 1)},
       {DynamicSupervisor,
        strategy: :one_for_one,
        max_restarts: 3,
@@ -90,33 +94,11 @@ defmodule LawnBot.Adapters.QQ do
   @doc "将 QQ 网关事件 payload 转换为 LawnBot 事件结构体。"
   @spec to_event(map()) :: LawnBot.Event.t()
   def to_event(payload) do
-    {message_type, session_type} =
-      case payload["t"] do
-        "C2C_MESSAGE_CREATE" -> {:normal, :c2c}
-        "GROUP_MESSAGE_CREATE" -> {:normal, :group}
-        "GROUP_AT_MESSAGE_CREATE" -> {:normal, :group}
-      end
-
+    {message_type, session_type} = extract_event_type(payload)
     message_id = payload["d"]["id"]
-
-    session_id =
-      case session_type do
-        :c2c -> payload["d"]["author"]["user_openid"]
-        :group -> payload["d"]["group_openid"]
-      end
-
-    author_id =
-      case session_type do
-        :c2c -> payload["d"]["author"]["user_openid"]
-        :group -> payload["d"]["author"]["member_openid"]
-      end
-
-    nickname =
-      case session_type do
-        :c2c -> nil
-        :group -> payload["d"]["author"]["username"]
-      end
-
+    session_id = extract_session_id(payload, session_type)
+    author_id = extract_author_id(payload, session_type)
+    nickname = extract_nickname(payload, session_type)
     content = payload["d"]["content"]
 
     %LawnBot.Event{
@@ -129,6 +111,33 @@ defmodule LawnBot.Adapters.QQ do
       extra: %{}
     }
   end
+
+  @spec extract_event_type(map()) ::
+          {:normal | :new_friend | :delete_friend | nil, :group | :c2c | nil}
+  defp extract_event_type(%{"t" => "C2C_MESSAGE_CREATE"}), do: {:normal, :c2c}
+  defp extract_event_type(%{"t" => "FRIEND_ADD"}), do: {:new_friend, :c2c}
+  defp extract_event_type(%{"t" => "FRIEND_DEL"}), do: {:delete_friend, :c2c}
+  defp extract_event_type(%{"t" => "GROUP_MESSAGE_CREATE"}), do: {:normal, :group}
+  defp extract_event_type(%{"t" => "GROUP_AT_MESSAGE_CREATE"}), do: {:normal, :group}
+
+  defp extract_event_type(%{"t" => type}) do
+    Logger.warning("Unknown QQ event type: #{type}")
+    {nil, nil}
+  end
+
+  @spec extract_session_id(map(), :c2c | :group | nil) :: String.t() | nil
+  defp extract_session_id(payload, :c2c), do: payload["d"]["author"]["user_openid"]
+  defp extract_session_id(payload, :group), do: payload["d"]["group_openid"]
+  defp extract_session_id(_payload, _), do: nil
+
+  @spec extract_author_id(map(), :c2c | :group | nil) :: String.t() | nil
+  defp extract_author_id(payload, :c2c), do: payload["d"]["author"]["user_openid"]
+  defp extract_author_id(payload, :group), do: payload["d"]["author"]["member_openid"]
+  defp extract_author_id(_payload, _), do: nil
+
+  @spec extract_nickname(map(), :c2c | :group | nil) :: String.t() | nil
+  defp extract_nickname(payload, :group), do: payload["d"]["author"]["username"]
+  defp extract_nickname(_payload, _), do: nil
 
   @spec via_tuple(String.t()) :: {:via, Registry, {Registry.registry(), {module(), String.t()}}}
   # 适配器监督树在 Registry 中的名字。

@@ -101,7 +101,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   # 获取机器人 `access_token` 与 token 刷新时间。
   @spec fetch_access_token(String.t(), String.t()) :: {:ok, QQ.token()} | {:error, term()}
   defp fetch_access_token(app_id, client_secret) do
-    case Req.post(@token_url, json: %{"appId" => app_id, "clientSecret" => client_secret}) do
+    case Req.post(@token_url,
+           json: %{"appId" => app_id, "clientSecret" => client_secret},
+           finch: [name: LawnBot.Finch, pool_tag: app_id]
+         ) do
       {:ok, %Req.Response{body: %{"access_token" => access_token, "expires_in" => expires_in}}}
       when is_binary(access_token) ->
         case positive_int(expires_in) do
@@ -125,12 +128,18 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp fetch_gateway(access_token, config) do
     headers = %{"Authorization" => QQ.token(access_token)}
 
-    case Req.get(@gateway_url, headers: headers) do
+    case Req.get(@gateway_url,
+           headers: headers,
+           finch: [name: LawnBot.Finch, pool_tag: config.app_id]
+         ) do
       {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
         {:ok, parse_gateway(url, body, config)}
 
       _ ->
-        case Req.get(@plain_gateway_url, headers: headers) do
+        case Req.get(@plain_gateway_url,
+               headers: headers,
+               finch: [name: LawnBot.Finch, pool_tag: config.app_id]
+             ) do
           {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
             {:ok, parse_gateway(url, body, config)}
 

@@ -14,7 +14,8 @@ defmodule LawnBot.Application do
   def start(_type, _args) do
     children = [
       {Registry, name: LawnBot.AdapterRegistry, keys: :unique},
-      LawnBot.AdapterSupervisor
+      LawnBot.AdapterSupervisor,
+      {Finch, name: LawnBot.Finch}
     ]
 
     with gateways when is_map(gateways) and map_size(gateways) > 0 <-
@@ -40,14 +41,22 @@ end
 
 defmodule LawnBot.Event do
   @moduledoc "LawnBot 事件结构体。"
-  defstruct [:session_type, :session_id, :message_type, :message_id, :author, :content, :extra]
+  defstruct [
+    :session_type,
+    :session_id,
+    :message_type,
+    :message_id,
+    :author,
+    :content,
+    extra: %{}
+  ]
 
   @type t :: %__MODULE__{
-          session_type: :group | :c2c,
-          session_id: String.t(),
-          message_type: :normal | :new_friend,
-          message_id: String.t(),
-          author: %{id: String.t(), nickname: String.t() | nil},
+          session_type: :group | :c2c | nil,
+          session_id: String.t() | nil,
+          message_type: :normal | :new_friend | :delete_friend | nil,
+          message_id: String.t() | nil,
+          author: %{id: String.t() | nil, nickname: String.t() | nil},
           content: term(),
           extra: map()
         }
@@ -58,7 +67,7 @@ defmodule LawnBot.Reply do
   defstruct [:action, :event]
 
   @type t :: %__MODULE__{
-          action: :reply | :ignore,
+          action: :new_message | :reply | :ignore,
           event: LawnBot.Event.t() | nil
         }
 end
