@@ -54,7 +54,6 @@ defmodule LawnBot.Adapters.QQ do
   @impl true
   def init(config) do
     children = [
-      {LawnBot.Adapters.QQ.Coordinator, config},
       {Task.Supervisor, name: task_supervisor_name(config.app_id)},
       {Finch.Pool,
        finch: LawnBot.Finch,
@@ -64,7 +63,8 @@ defmodule LawnBot.Adapters.QQ do
        strategy: :one_for_one,
        max_restarts: 3,
        max_seconds: 30,
-       name: shard_supervisor_name(config.app_id)}
+       name: shard_supervisor_name(config.app_id)},
+      {LawnBot.Adapters.QQ.Coordinator, config}
     ]
 
     Logger.info("Starting #{bot_name(config)}")
