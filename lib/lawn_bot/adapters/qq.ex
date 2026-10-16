@@ -83,10 +83,6 @@ defmodule LawnBot.Adapters.QQ do
   def task_supervisor_name(app_id),
     do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, app_id}}}
 
-  @doc "构造机器人 token。形如 `QQBot <access_token>`。"
-  @spec token(String.t()) :: String.t()
-  def token(access_token), do: "QQBot #{access_token}"
-
   @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`，若未配置 `:name` 则使用 `app_id`。"
   @spec bot_name(config()) :: String.t()
   def bot_name(config), do: "QQ Bot: #{Map.get(config, :name) || config.app_id}"

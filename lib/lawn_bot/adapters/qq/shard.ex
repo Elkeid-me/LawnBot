@@ -152,18 +152,6 @@ defmodule LawnBot.Adapters.QQ.Shard do
     {:ok, %{state | token: token}}
   end
 
-  def handle_info(%LawnBot.Reply{action: action} = reply, state)
-      when action == :reply or action == :new_message do
-    Task.Supervisor.start_child(
-      QQ.task_supervisor_name(state.config.app_id),
-      QQ.Shard,
-      :send_message,
-      [reply, state]
-    )
-
-    {:ok, state}
-  end
-
   def handle_info(_message, state), do: {:ok, state}
 
   @impl true
@@ -302,7 +290,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     %{
       "op" => 2,
       "d" => %{
-        "token" => QQ.token(access_token),
+        "token" => access_token,
         "intents" => intents(config),
         "shard" => shard,
         "properties" => %{
@@ -322,7 +310,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     %{
       "op" => 6,
       "d" => %{
-        "token" => QQ.token(access_token),
+        "token" => access_token,
         "session_id" => session_id,
         "seq" => seq
       }
@@ -357,23 +345,23 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp handle_event(state, payload) do
-    pid = self()
+    task_supervisor = QQ.task_supervisor_name(state.config.app_id)
+    access_token = state.token.access_token
+    app_id = state.config.app_id
 
     case Map.get(state.config, :handler) do
       nil ->
         Logger.debug("No handler configured, ignoring event: #{inspect(payload)}")
 
       {:func, handler} when is_function(handler) ->
-        Task.Supervisor.start_child(QQ.task_supervisor_name(state.config.app_id), fn ->
-          reply = payload |> QQ.to_event() |> handler.()
-          send(pid, reply)
+        Task.Supervisor.start_child(task_supervisor, fn ->
+          payload |> QQ.to_event() |> handler.() |> handle_reply(access_token, app_id)
         end)
 
       {:module, module} when is_atom(module) ->
-        Task.Supervisor.start_child(QQ.task_supervisor_name(state.config.app_id), fn ->
+        Task.Supervisor.start_child(task_supervisor, fn ->
           event = QQ.to_event(payload)
-          reply = apply(module, :handle_event, [event])
-          send(pid, reply)
+          module |> apply(:handle_event, [event]) |> handle_reply(access_token, app_id)
         end)
 
       {:via_session_id, handlers} when is_map(handlers) ->
@@ -384,9 +372,16 @@ defmodule LawnBot.Adapters.QQ.Shard do
     end
   end
 
-  @spec send_message(LawnBot.Reply.t(), t()) :: :ok
-  def send_message(%LawnBot.Reply{action: action, event: event}, state) do
-    token = state.token.access_token
+  @spec handle_reply(LawnBot.Reply.t(), String.t(), String.t()) :: :ok
+  defp handle_reply(%LawnBot.Reply{action: action} = reply, access_token, app_id)
+      when action == :reply or action == :new_message do
+    send_message(reply, access_token, app_id)
+  end
+
+  defp handle_reply(_reply, _access_token, _app_id), do: :ok
+
+  @spec send_message(LawnBot.Reply.t(), String.t(), String.t()) :: :ok
+  defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, app_id) do
     session_id = event.session_id
 
     url =
@@ -402,18 +397,14 @@ defmodule LawnBot.Adapters.QQ.Shard do
         _ -> nil
       end
 
-    Req.post(url,
-      json: message,
-      headers: %{"Authorization" => QQ.token(token)},
-      finch: [name: LawnBot.Finch, pool_tag: state.config.app_id]
-    )
-
+    header = %{"Authorization" => access_token}
+    Req.post(url, json: message, headers: header, finch: [name: LawnBot.Finch, pool_tag: app_id])
     :ok
   end
 
+  # 构造消息发送的 JSON 载荷
+  # todo
   defp build_message_content(event) do
-    # 构建消息内容，根据 event 的类型和内容生成适合 QQ API 的消息格式
-    # 这里可以根据实际需求进行实现
     %{
       "msg_type" => 0,
       "content" => event.content

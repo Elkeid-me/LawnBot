@@ -108,7 +108,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       {:ok, %Req.Response{body: %{"access_token" => access_token, "expires_in" => expires_in}}}
       when is_binary(access_token) ->
         case positive_int(expires_in) do
-          {:ok, expires_in} -> {:ok, %{access_token: access_token, expires_in: expires_in}}
+          {:ok, expires_in} -> {:ok, %{access_token: token(access_token), expires_in: expires_in}}
           :error -> {:error, {:invalid_expires_in, expires_in}}
         end
 
@@ -126,7 +126,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   # 获取网关地址与建议分片数。
   @spec fetch_gateway(String.t(), QQ.config()) :: {:ok, gateway()} | {:error, term()}
   defp fetch_gateway(access_token, config) do
-    headers = %{"Authorization" => QQ.token(access_token)}
+    headers = %{"Authorization" => access_token}
 
     case Req.get(@gateway_url,
            headers: headers,
@@ -299,4 +299,8 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   defp warn_on_session_limit(_remaining, _shards), do: :ok
+
+  # 构造机器人 token。形如 `QQBot <access_token>`。
+  @spec token(String.t()) :: String.t()
+  defp token(access_token), do: "QQBot #{access_token}"
 end
