@@ -177,15 +177,15 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
         %{"t" => "RESUMED"} ->
           Logger.info("RESUMED on #{shard_name(state)}, from seq #{state.seq}")
-          update_seq(state, payload)
+          update_seq(payload, state)
 
         %{"t" => _} ->
-          handle_event(state, payload)
-          update_seq(state, payload)
+          handle_event(payload, state)
+          update_seq(payload, state)
 
         _ ->
           Logger.debug("Unknown payload on #{shard_name(state)}: #{inspect(payload)}")
-          update_seq(state, payload)
+          update_seq(payload, state)
       end
 
     {:ok, state}
@@ -228,10 +228,10 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp via_tuple(app_id, shard_id),
     do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, app_id, shard_id}}}
 
-  @spec update_seq(t(), nil | non_neg_integer() | map()) :: t()
-  defp update_seq(state, nil), do: state
+  @spec update_seq(nil | non_neg_integer() | map(), t()) :: t()
+  defp update_seq(nil, state), do: state
 
-  defp update_seq(state, seq) when is_integer(seq) do
+  defp update_seq(seq, state) when is_integer(seq) do
     case state.seq do
       nil -> %{state | seq: seq}
       old_seq when is_integer(old_seq) and old_seq < seq -> %{state | seq: seq}
@@ -239,8 +239,8 @@ defmodule LawnBot.Adapters.QQ.Shard do
     end
   end
 
-  defp update_seq(state, payload) when is_map(payload),
-    do: update_seq(state, Map.fetch!(payload, "s"))
+  defp update_seq(payload, state) when is_map(payload),
+    do: update_seq(Map.fetch!(payload, "s"), state)
 
   # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
   defp authenticate_delay(state) do
@@ -339,7 +339,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     normalize_intents(@default_intents)
   end
 
-  defp handle_event(state, payload) do
+  defp handle_event(payload, state) do
     task_supervisor = QQ.task_supervisor_name(state.config.app_id)
     access_token = state.token.access_token
     app_id = state.config.app_id

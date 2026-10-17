@@ -119,7 +119,7 @@ defmodule LawnBot.Adapters.QQ do
       message_id: message_id,
       author: %{id: author_id, nickname: nickname},
       content: content,
-      extra: %{}
+      extra: payload
     }
   end
 
