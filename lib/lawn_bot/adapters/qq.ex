@@ -15,6 +15,8 @@ defmodule LawnBot.Adapters.QQ do
 
   use Supervisor
 
+  alias LawnBot.Adapters.QQ.Coordinator
+
   require Logger
 
   @type config() :: %{
@@ -64,12 +66,18 @@ defmodule LawnBot.Adapters.QQ do
        max_restarts: 3,
        max_seconds: 30,
        name: shard_supervisor_name(config.app_id)},
-      {LawnBot.Adapters.QQ.Coordinator, config}
+      {Coordinator, config}
     ]
 
     Logger.info("Starting #{bot_name(config)}")
     Supervisor.init(children, strategy: :one_for_all, max_restarts: 3, max_seconds: 30)
   end
+
+  @doc "Coordinator 进程在 Registry 中的名字。"
+  @spec coordinator_name(String.t()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), String.t()}}}
+  def coordinator_name(app_id),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, app_id}}}
 
   @doc "分片监督树的名字，用于 `DynamicSupervisor.which_children/1` 等。"
   @spec shard_supervisor_name(String.t()) ::

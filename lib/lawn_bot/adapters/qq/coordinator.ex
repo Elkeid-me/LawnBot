@@ -40,10 +40,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @spec start_link(QQ.config()) :: {:ok, pid()} | {:error, term()}
   def start_link(config),
-    do: GenServer.start_link(__MODULE__, config, name: via_tuple(config.app_id))
+    do: GenServer.start_link(__MODULE__, config, name: QQ.coordinator_name(config.app_id))
 
   @impl true
-  @spec start_link(QQ.config()) :: {:ok, state(), {:continue, :bootstrap}}
+  @spec init(QQ.config()) :: {:ok, state(), {:continue, :bootstrap}}
   def init(config) do
     state = %{config: config, token: nil, gateway: nil, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
@@ -94,9 +94,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   def handle_info(:bootstrap, state), do: bootstrap(state)
   def handle_info(_message, state), do: {:noreply, state}
 
-  # Coordinator 进程在 Registry 中的名字。
-  defp via_tuple(app_id),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.Coordinator, app_id}}}
+  @impl true
+  @spec handle_call(:request_token | term(), GenServer.from(), state()) ::
+          {:reply, String.t(), state()} | {:noreply, state()}
+  def handle_call(:request_token, _from, state), do: {:reply, state.token.access_token, state}
+  def handle_call(_request, _from, state), do: {:noreply, state}
 
   # 获取机器人 `access_token` 与 token 刷新时间。
   @spec fetch_access_token(String.t(), String.t()) :: {:ok, QQ.token()} | {:error, term()}

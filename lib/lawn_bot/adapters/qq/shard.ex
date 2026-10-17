@@ -206,13 +206,12 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   # Identify/Resume 被拒绝：丢弃会话，下次连接重新 Identify。
-  defp handle_payload(%{"op" => 9} = payload, state) do
-    Logger.warning(
-      "Invalid Session on #{shard_name(state)}: #{inspect(Map.get(payload, "d"))}, " <>
-        "falling back to a fresh Identify"
-    )
-
-    {:close, %{state | session_id: nil, seq: nil, awaiting_ack?: false}}
+  #
+  # 需要重新获取 `access_token`
+  defp handle_payload(%{"op" => 9}, state) do
+    Logger.warning("Invalid Session on #{shard_name(state)}, falling back to a fresh Identify")
+    new_token = GenServer.call(QQ.coordinator_name(state.config.app_id), :request_token)
+    {:close, %{state | session_id: nil, seq: nil, awaiting_ack?: false, token: new_token}}
   end
 
   # Hello：心跳周期以此为准，延时后发起 Identify/Resume。
@@ -374,7 +373,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   @spec handle_reply(LawnBot.Reply.t(), String.t(), String.t()) :: :ok
   defp handle_reply(%LawnBot.Reply{action: action} = reply, access_token, app_id)
-      when action == :reply or action == :new_message do
+       when action == :reply or action == :new_message do
     send_message(reply, access_token, app_id)
   end
 
