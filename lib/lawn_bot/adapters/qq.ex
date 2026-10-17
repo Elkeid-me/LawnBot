@@ -53,6 +53,13 @@ defmodule LawnBot.Adapters.QQ do
     :ignore
   end
 
+  def child_spec(%{app_id: app_id} = config) do
+    %{
+      id: {__MODULE__, app_id},
+      start: {__MODULE__, :start_link, [config]}
+    }
+  end
+
   @impl true
   def init(config) do
     children = [

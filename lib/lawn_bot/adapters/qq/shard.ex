@@ -160,11 +160,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @impl true
   def handle_disconnect(status, state) do
     delay = backoff(status.attempt_number || 1)
-
-    Logger.warning(
-      "#{shard_name(state)} disconnected: #{inspect(status.reason)}, reconnecting in #{delay}ms"
-    )
-
+    Logger.warning("#{shard_name(state)} disconnected, reconnecting in #{delay}ms")
     Process.sleep(delay)
     {:reconnect, state}
   end
