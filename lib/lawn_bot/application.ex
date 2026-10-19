@@ -46,9 +46,9 @@ defmodule LawnBot.Event do
     :session_id,
     :message_type,
     :message_id,
-    :author,
+    :author_id,
     :content,
-    extra: %{}
+    :extra
   ]
 
   @type t :: %__MODULE__{
@@ -56,10 +56,44 @@ defmodule LawnBot.Event do
           session_id: String.t() | nil,
           message_type: :normal | :new_friend | :delete_friend | nil,
           message_id: String.t() | nil,
-          author: %{id: String.t() | nil, nickname: String.t() | nil},
-          content: term(),
-          extra: map()
+          author_id: String.t(),
+          content: LawnBot.Event.Content.t(),
+          extra: map() | nil
         }
+end
+
+defmodule LawnBot.Event.Attachment do
+  @moduledoc "LawnBot 事件附件结构体。"
+  defstruct [:filename, :mime_type, :size, :width, :height, :url]
+
+  @type t :: %__MODULE__{
+          filename: String.t(),
+          mime_type: String.t(),
+          size: non_neg_integer(),
+          width: non_neg_integer() | nil,
+          height: non_neg_integer() | nil,
+          url: String.t()
+        }
+end
+
+defmodule LawnBot.Event.History do
+  @moduledoc false
+  @type t :: [LawnBot.Event.Content.t()]
+end
+
+defmodule LawnBot.Event.Content do
+  @moduledoc false
+  defstruct [:text, :attachments, :references]
+
+  @type t ::
+          %__MODULE__{
+            text: String.t(),
+            attachments: [LawnBot.Event.Attachment.t()] | nil,
+            references: [LawnBot.Event.Content.t()] | nil
+          }
+          | LawnBot.Event.History.t()
+          | String.t()
+          | nil
 end
 
 defmodule LawnBot.Reply do

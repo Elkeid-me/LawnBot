@@ -16,6 +16,7 @@ defmodule LawnBot.Adapters.QQ do
   use Supervisor
 
   alias LawnBot.Adapters.QQ.Coordinator
+  alias LawnBot.Event.Content
 
   require Logger
 
@@ -105,21 +106,21 @@ defmodule LawnBot.Adapters.QQ do
   @doc "将 QQ 网关事件 payload 转换为 LawnBot 事件结构体。"
   @spec to_event(map()) :: LawnBot.Event.t()
   def to_event(payload) do
+    data = payload["d"]
     {message_type, session_type} = extract_event_type(payload)
-    message_id = payload["d"]["id"]
-    session_id = extract_session_id(payload, session_type)
-    author_id = extract_author_id(payload, session_type)
-    nickname = extract_nickname(payload, session_type)
-    content = payload["d"]["content"]
+    message_id = data["id"]
+    session_id = extract_session_id(data, session_type)
+    author_id = extract_author_id(data, session_type)
+    content = extract_content(data)
 
     %LawnBot.Event{
       session_type: session_type,
       session_id: session_id,
       message_type: message_type,
       message_id: message_id,
-      author: %{id: author_id, nickname: nickname},
+      author_id: author_id,
       content: content,
-      extra: payload
+      extra: nil
     }
   end
 
@@ -137,19 +138,63 @@ defmodule LawnBot.Adapters.QQ do
   end
 
   @spec extract_session_id(map(), :c2c | :group | nil) :: String.t() | nil
-  defp extract_session_id(payload, :c2c), do: payload["d"]["author"]["user_openid"]
-  defp extract_session_id(payload, :group), do: payload["d"]["group_openid"]
-  defp extract_session_id(_payload, _), do: nil
+  defp extract_session_id(data, :c2c), do: data["author"]["user_openid"]
+  defp extract_session_id(data, :group), do: data["group_openid"]
+  defp extract_session_id(_data, _), do: nil
 
   @spec extract_author_id(map(), :c2c | :group | nil) :: String.t() | nil
-  defp extract_author_id(payload, :c2c), do: payload["d"]["author"]["user_openid"]
-  defp extract_author_id(payload, :group), do: payload["d"]["author"]["member_openid"]
-  defp extract_author_id(_payload, _), do: nil
+  defp extract_author_id(data, :c2c), do: data["author"]["user_openid"]
+  defp extract_author_id(data, :group), do: data["author"]["member_openid"]
+  defp extract_author_id(_data, _), do: nil
 
-  @spec extract_nickname(map(), :c2c | :group | nil) :: String.t() | nil
-  defp extract_nickname(payload, :group), do: payload["d"]["author"]["username"]
-  defp extract_nickname(_payload, _), do: nil
+  @spec extract_content(map()) :: Content.t() | nil
+  defp extract_content(%{"message_type" => 103} = data) do
+    text = data["content"]
+    attachments = extract_attachments(data)
 
+    references =
+      case data["msg_elements"] do
+        nil -> nil
+        references -> Enum.map(references, &extract_content/1)
+      end
+
+    %Content{
+      text: text,
+      attachments: attachments,
+      references: references
+    }
+  end
+
+  # 0：普通消息
+  defp extract_content(%{"message_type" => 0} = data) do
+    text = data["content"]
+    attachments = extract_attachments(data)
+
+    if attachments == nil do
+      text
+    else
+      %Content{
+        text: text,
+        attachments: attachments,
+        references: nil
+      }
+    end
+  end
+
+  defp extract_attachments(%{"attachments" => attachments}) when is_list(attachments),
+    do:
+      Enum.map(attachments, fn attachment ->
+        %LawnBot.Event.Attachment{
+          filename: attachment["filename"],
+          mime_type: attachment["content_type"],
+          size: attachment["size"],
+          width: attachment["width"],
+          height: attachment["height"],
+          url: attachment["url"]
+        }
+      end)
+
+  defp extract_attachments(_), do: nil
   @spec via_tuple(String.t()) :: {:via, Registry, {Registry.registry(), {module(), String.t()}}}
   # 适配器监督树在 Registry 中的名字。
   defp via_tuple(app_id), do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, app_id}}}
