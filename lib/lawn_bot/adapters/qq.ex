@@ -16,6 +16,7 @@ defmodule LawnBot.Adapters.QQ do
   use Supervisor
 
   alias LawnBot.Adapters.QQ.Coordinator
+  alias LawnBot.Adapters.QQ.TokenStore
   alias LawnBot.Event.Content
 
   require Logger
@@ -63,6 +64,9 @@ defmodule LawnBot.Adapters.QQ do
 
   @impl true
   def init(config) do
+    Logger.info("Starting #{bot_name(config)}")
+    tid = TokenStore.new()
+
     children = [
       {Task.Supervisor, name: task_supervisor_name(config.app_id)},
       {Finch.Pool,
@@ -74,11 +78,10 @@ defmodule LawnBot.Adapters.QQ do
        max_restarts: 3,
        max_seconds: 30,
        name: shard_supervisor_name(config.app_id)},
-      {Coordinator, config}
+      {Coordinator, {config, tid}}
     ]
 
-    Logger.info("Starting #{bot_name(config)}")
-    Supervisor.init(children, strategy: :one_for_all, max_restarts: 3, max_seconds: 30)
+    Supervisor.init(children, strategy: :rest_for_one, max_restarts: 3, max_seconds: 30)
   end
 
   @doc "Coordinator 进程在 Registry 中的名字。"

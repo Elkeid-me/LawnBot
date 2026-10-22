@@ -4,18 +4,23 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   职责：
 
-    * 获取 access_token，并在过期前定时刷新，刷新结果广播给全部分片；
+    * 获取 access_token，并在过期前定时刷新，结果写入 `TokenStore`；
     * 调用 `GET /gateway/bot` 获取网关地址与建议分片数；
     * 拿到 token 后在所属 DynamicSupervisor 下启动各分片连接进程。
 
-  本进程是 `LawnBot.Adapters.QQ`（DynamicSupervisor）的第一个子进程，
+  token 存放在本适配器私有的 ETS 表中，分片与发送任务在用到时才读取，
+  因此刷新不需要广播，也不存在旧快照。
+
+  本进程是 `LawnBot.Adapters.QQ`（Supervisor）的最后一个子进程，
   自身被监督树重启后会重新引导：已存在的分片会收到 `{:error, {:already_started, pid}}`
-  而被跳过，只刷新它们持有的 token。
+  而被跳过，它们会在下次使用 token 时读到新值。
   """
 
   use GenServer
 
+  alias :ets, as: ETS
   alias LawnBot.Adapters.QQ
+  alias LawnBot.Adapters.QQ.TokenStore
 
   require Logger
 
@@ -33,19 +38,19 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         }
   @type state() :: %{
           config: QQ.config(),
-          token: QQ.token() | nil,
+          token_table: ETS.tid(),
           gateway: gateway() | nil,
           refresh_ref: reference() | nil
         }
 
-  @spec start_link(QQ.config()) :: {:ok, pid()} | {:error, term()}
-  def start_link(config),
-    do: GenServer.start_link(__MODULE__, config, name: QQ.coordinator_name(config.app_id))
+  @spec start_link({QQ.config(), ETS.tid()}) :: {:ok, pid()} | {:error, term()}
+  def start_link({config, tid}),
+    do: GenServer.start_link(__MODULE__, {config, tid}, name: QQ.coordinator_name(config.app_id))
 
   @impl true
-  @spec init(QQ.config()) :: {:ok, state(), {:continue, :bootstrap}}
-  def init(config) do
-    state = %{config: config, token: nil, gateway: nil, refresh_ref: nil}
+  @spec init({QQ.config(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
+  def init({config, tid}) do
+    state = %{config: config, token_table: tid, gateway: nil, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
   end
 
@@ -63,27 +68,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     case fetch_access_token(app_id, client_secret) do
       {:ok, token} ->
         Logger.info("Refreshed token for #{QQ.bot_name(config)}")
-
-        app_id
-        |> QQ.shard_supervisor_name()
-        |> DynamicSupervisor.which_children()
-        |> Enum.each(fn {_, pid, _, _} -> send(pid, {:qq_token_updated, token}) end)
-
-        {:noreply, schedule_token_refresh(%{state | token: token})}
+        TokenStore.put(state.token_table, token.access_token)
+        {:noreply, schedule_token_refresh(state, token.expires_in)}
 
       {:error, reason} ->
-        case reason do
-          {:qq_api, code, message} ->
-            Logger.error("Failed to refresh token for #{QQ.bot_name(config)}: #{code}, #{message}")
-
-          {:unexpected_response, _} ->
-            Logger.error("Failed to refresh token for #{QQ.bot_name(config)}: unexpected response")
-
-          exception ->
-            Logger.error(
-              "Failed to refresh token for #{QQ.bot_name(config)}: #{inspect(exception)}"
-            )
-        end
+        log_failure("Failed to refresh token for", reason, config)
 
         {:noreply,
          %{state | refresh_ref: Process.send_after(self(), :refresh_token, @token_refresh_retry)}}
@@ -93,12 +82,6 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   # 重试启动
   def handle_info(:bootstrap, state), do: bootstrap(state)
   def handle_info(_message, state), do: {:noreply, state}
-
-  @impl true
-  @spec handle_call(:request_token | term(), GenServer.from(), state()) ::
-          {:reply, String.t(), state()} | {:noreply, state()}
-  def handle_call(:request_token, _from, state), do: {:reply, state.token.access_token, state}
-  def handle_call(_request, _from, state), do: {:noreply, state}
 
   # 获取机器人 `access_token` 与 token 刷新时间。
   @spec fetch_access_token(String.t(), String.t()) :: {:ok, QQ.token()} | {:error, term()}
@@ -168,25 +151,15 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       %{url: url, shards: shards, remaining: remaining} = gateway
       Logger.info("Gateway for #{QQ.bot_name(config)}, #{url} (shards: #{shards})")
       warn_on_session_limit(remaining, shards)
-      state = %{state | token: token, gateway: gateway}
+      state = %{state | gateway: gateway}
+      TokenStore.put(state.token_table, token.access_token)
+      state = schedule_token_refresh(state, token.expires_in)
       start_shards(state)
-      state = schedule_token_refresh(state)
       {:noreply, state}
     else
       {:error, reason} ->
-        case reason do
-          {:qq_api, code, message} ->
-            Logger.error("Failed to bootstrap #{QQ.bot_name(config)}: #{code}, #{message}")
-
-          {:unexpected_response, _} ->
-            Logger.error("Failed to bootstrap #{QQ.bot_name(config)}: unexpected response")
-
-          exception ->
-            Logger.error("Failed to bootstrap #{QQ.bot_name(config)}: #{inspect(exception)}")
-        end
-
+        log_failure("Failed to bootstrap", reason, config)
         Process.send_after(self(), :bootstrap, @bootstrap_retry)
-        state = %{state | token: nil}
         {:noreply, state}
     end
   end
@@ -238,17 +211,17 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp non_negative_int(_value), do: nil
 
   @spec start_shards(state()) :: :ok
-  defp start_shards(%{config: config, token: token, gateway: gateway}) do
+  defp start_shards(%{config: config, token_table: tid, gateway: gateway}) do
     started =
       0..(gateway.shards - 1)
-      |> Stream.map(fn shard_id -> start_shard(config, token, gateway, shard_id) end)
+      |> Stream.map(fn shard_id -> start_shard(config, tid, gateway, shard_id) end)
       |> Enum.count(&is_pid/1)
 
     Logger.info("#{QQ.bot_name(config)} started #{started}/#{gateway.shards} shard(s)")
   end
 
-  @spec start_shard(QQ.config(), QQ.token(), gateway(), non_neg_integer()) :: pid() | nil
-  defp start_shard(%{app_id: app_id} = config, token, gateway, shard_id) do
+  @spec start_shard(QQ.config(), ETS.tid(), gateway(), non_neg_integer()) :: pid() | nil
+  defp start_shard(%{app_id: app_id} = config, tid, gateway, shard_id) do
     %{url: url, shards: shards, max_concurrency: max_concurrency} = gateway
 
     shard_state = %QQ.Shard{
@@ -256,7 +229,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       gateway_url: url,
       shard: [shard_id, shards],
       max_concurrency: max_concurrency,
-      token: token
+      token_table: tid
     }
 
     case DynamicSupervisor.start_child(QQ.shard_supervisor_name(app_id), {QQ.Shard, shard_state}) do
@@ -264,8 +237,6 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         pid
 
       {:error, {:already_started, pid}} ->
-        # 分片已在运行（例如 Coordinator 自身被重启），只需同步最新 token。
-        send(pid, {:qq_token_updated, token})
         pid
 
       {:error, reason} ->
@@ -274,8 +245,8 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
-  @spec schedule_token_refresh(state()) :: state()
-  defp schedule_token_refresh(%{token: token} = state) do
+  @spec schedule_token_refresh(state(), pos_integer()) :: state()
+  defp schedule_token_refresh(state, expires_in) do
     state =
       case state.refresh_ref do
         nil ->
@@ -288,8 +259,22 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
     # 文档建议在过期前 60 秒刷新，此时获取会拿到新的 token。
     # 如果 expires_in 小于 60 秒，则立即刷新。
-    delay = max((token.expires_in - 60) * 1_000, 1_000)
+    delay = max((expires_in - 60) * 1_000, 1_000)
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
+  end
+
+  @spec log_failure(String.t(), term(), QQ.config()) :: :ok
+  defp log_failure(prefix, reason, config) do
+    case reason do
+      {:qq_api, code, message} ->
+        Logger.error("#{prefix} #{QQ.bot_name(config)}: #{code}, #{message}")
+
+      {:unexpected_response, _} ->
+        Logger.error("#{prefix} #{QQ.bot_name(config)}: unexpected response")
+
+      exception ->
+        Logger.error("#{prefix} #{QQ.bot_name(config)}: #{inspect(exception)}")
+    end
   end
 
   @spec warn_on_session_limit(non_neg_integer(), pos_integer()) :: :ok

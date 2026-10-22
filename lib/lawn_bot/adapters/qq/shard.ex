@@ -16,7 +16,9 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   use WebSockex
 
+  alias :ets, as: ETS
   alias LawnBot.Adapters.QQ
+  alias LawnBot.Adapters.QQ.TokenStore
 
   require Logger
 
@@ -25,7 +27,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     :gateway_url,
     :shard,
     :max_concurrency,
-    :token,
+    :token_table,
     :session_id,
     :heartbeat_interval,
     :heartbeat_ref,
@@ -46,7 +48,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
           gateway_url: String.t(),
           shard: shard(),
           max_concurrency: pos_integer(),
-          token: QQ.token(),
+          token_table: ETS.tid(),
           session_id: String.t() | nil,
           heartbeat_interval: pos_integer() | nil,
           heartbeat_ref: reference() | nil,
@@ -125,7 +127,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   @impl true
   def handle_info(:authenticate, state) do
-    %{access_token: access_token} = state.token
+    access_token = TokenStore.get(state.token_table)
 
     {action, payload} =
       case state.session_id do
@@ -145,11 +147,6 @@ defmodule LawnBot.Adapters.QQ.Shard do
       state = schedule_heartbeat(%{state | awaiting_ack?: true})
       {:reply, heartbeat_frame(state), state}
     end
-  end
-
-  def handle_info({:qq_token_updated, token}, state) do
-    Logger.info("#{shard_name(state)} received updated QQ token")
-    {:ok, %{state | token: token}}
   end
 
   def handle_info(_message, state), do: {:ok, state}
@@ -202,12 +199,9 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   # Identify/Resume 被拒绝：丢弃会话，下次连接重新 Identify。
-  #
-  # 需要重新获取 `access_token`
   defp handle_payload(%{"op" => 9}, state) do
     Logger.warning("Invalid Session on #{shard_name(state)}, falling back to a fresh Identify")
-    new_token = GenServer.call(QQ.coordinator_name(state.config.app_id), :request_token)
-    {:close, %{state | session_id: nil, seq: nil, awaiting_ack?: false, token: new_token}}
+    {:close, %{state | session_id: nil, seq: nil, awaiting_ack?: false}}
   end
 
   # Hello：心跳周期以此为准，延时后发起 Identify/Resume。
@@ -341,7 +335,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   defp handle_event(payload, state) do
     task_supervisor = QQ.task_supervisor_name(state.config.app_id)
-    access_token = state.token.access_token
+    tid = state.token_table
     app_id = state.config.app_id
 
     case Map.get(state.config, :handler) do
@@ -350,13 +344,13 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
       {:func, handler} when is_function(handler) ->
         Task.Supervisor.start_child(task_supervisor, fn ->
-          payload |> QQ.to_event() |> handler.() |> handle_reply(access_token, app_id)
+          payload |> QQ.to_event() |> handler.() |> handle_reply(tid, app_id)
         end)
 
       {:module, module} when is_atom(module) ->
         Task.Supervisor.start_child(task_supervisor, fn ->
           event = QQ.to_event(payload)
-          module |> apply(:handle_event, [event]) |> handle_reply(access_token, app_id)
+          module |> apply(:handle_event, [event]) |> handle_reply(tid, app_id)
         end)
 
       {:via_session_id, handlers} when is_map(handlers) ->
@@ -367,13 +361,13 @@ defmodule LawnBot.Adapters.QQ.Shard do
     end
   end
 
-  @spec handle_reply(LawnBot.Reply.t(), String.t(), String.t()) :: :ok
-  defp handle_reply(%LawnBot.Reply{action: action} = reply, access_token, app_id)
+  @spec handle_reply(LawnBot.Reply.t(), ETS.tid(), String.t()) :: :ok
+  defp handle_reply(%LawnBot.Reply{action: action} = reply, tid, app_id)
        when action == :reply or action == :new_message do
-    send_message(reply, access_token, app_id)
+    send_message(reply, TokenStore.get(tid), app_id)
   end
 
-  defp handle_reply(_reply, _access_token, _app_id), do: :ok
+  defp handle_reply(_reply, _tid, _app_id), do: :ok
 
   @spec send_message(LawnBot.Reply.t(), String.t(), String.t()) :: :ok
   defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, app_id) do

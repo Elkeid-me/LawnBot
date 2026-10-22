@@ -2,27 +2,38 @@ defmodule LawnBot.Adapters.QQ.CoordinatorTest do
   use ExUnit.Case, async: true
 
   alias LawnBot.Adapters.QQ.Coordinator
+  alias LawnBot.Adapters.QQ.TokenStore
 
   @config %{app_id: "app", client_secret: "secret"}
 
-  test "creates a child spec keyed by app id" do
-    supervisor = self()
+  defp state(tid) do
+    %{
+      config: @config,
+      token_table: tid,
+      gateway: nil,
+      refresh_ref: nil
+    }
+  end
 
-    assert %{id: {Coordinator, "app"}, start: {Coordinator, :start_link, [{^supervisor, @config}]}} =
-             Coordinator.child_spec({supervisor, @config})
+  test "creates a child spec keyed by module" do
+    tid = TokenStore.new()
+
+    assert %{id: Coordinator, start: {Coordinator, :start_link, [{@config, ^tid}]}} =
+             Coordinator.child_spec({@config, tid})
   end
 
   test "initializes with an asynchronous bootstrap continuation" do
-    assert {:ok, state, {:continue, :bootstrap}} = Coordinator.init({self(), @config})
-    assert state.supervisor == self()
+    tid = TokenStore.new()
+
+    assert {:ok, state, {:continue, :bootstrap}} = Coordinator.init({@config, tid})
     assert state.config == @config
-    assert state.token == nil
+    assert state.token_table == tid
     assert state.gateway == nil
     assert state.refresh_ref == nil
   end
 
   test "ignores unrelated messages" do
-    state = %{supervisor: self(), config: @config, token: nil, gateway: nil, refresh_ref: nil}
+    state = state(TokenStore.new())
 
     assert {:noreply, ^state} = Coordinator.handle_info(:unrelated, state)
   end
