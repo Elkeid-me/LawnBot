@@ -27,6 +27,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @bootstrap_retry 5_000
   @token_refresh_retry 60_000
 
+  # QQ 只在 token 剩余有效期不足 60 秒时才签发新 token；更早调用会原样返回旧 token，
+  # 并把 expires_in 改成它的剩余时间。因此刷新点必须落在这 60 秒窗口内部。
+  # 取中点 30 秒，给取整误差和网络延迟留出余量，同时保证旧 token 还有效，不会出现空窗。
+  @token_refresh_margin 30
+
   @token_url "https://api.bot.qq.com/app/getAppAccessToken"
   @gateway_url "https://api.bot.qq.com/gateway/bot"
   @plain_gateway_url "https://api.bot.qq.com/gateway"
@@ -148,8 +153,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     with {:ok, token} <- fetch_access_token(app_id, client_secret),
          %{access_token: access_token} = token,
          {:ok, gateway} <- fetch_gateway(access_token, config) do
-      %{url: url, shards: shards, remaining: remaining} = gateway
-      Logger.info("Gateway for #{QQ.bot_name(config)}, #{url} (shards: #{shards})")
+      %{shards: shards, remaining: remaining} = gateway
       warn_on_session_limit(remaining, shards)
       state = %{state | gateway: gateway}
       TokenStore.put(state.token_table, token.access_token)
@@ -257,9 +261,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
           %{state | refresh_ref: nil}
       end
 
-    # 文档建议在过期前 60 秒刷新，此时获取会拿到新的 token。
-    # 如果 expires_in 小于 60 秒，则立即刷新。
-    delay = max((expires_in - 60) * 1_000, 1_000)
+    # `expires_in` 是 token 的剩余有效期（有效期内重复获取返回同一个 token），
+    # 不是固定 7200 秒。刷新点取「剩余 30 秒」：若贴着 60 秒窗口边界刷新，
+    # 稍有偏差就会拿回旧 token（expires_in≈60），再被下面的 1 秒下限立即重试，
+    # 表现就是两次刷新相隔约 1 秒。
+    delay = max((expires_in - @token_refresh_margin) * 1_000, 1_000)
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
   end
 
