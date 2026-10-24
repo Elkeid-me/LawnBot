@@ -24,7 +24,7 @@ defmodule LawnBot.Adapters.QQ do
   @type config() :: %{
           required(:app_id) => String.t(),
           required(:client_secret) => String.t(),
-          optional(:name) => String.t(),
+          required(:name) => module(),
           optional(:os) => String.t(),
           optional(:browser) => String.t(),
           optional(:device) => String.t(),
@@ -67,44 +67,61 @@ defmodule LawnBot.Adapters.QQ do
     Logger.info("Starting #{bot_name(config)}")
     tid = TokenStore.new()
 
+    shards = Map.get(config, :shards, 1)
+    pool_size = shards * 50
+
     children = [
-      {Task.Supervisor, name: task_supervisor_name(config.app_id)},
+      {Task.Supervisor, name: task_supervisor_name(config.name)},
       {Finch.Pool,
        finch: LawnBot.Finch,
-       pool: Finch.Pool.new("https://api.bot.qq.com", tag: config.app_id),
-       size: Map.get(config, :shards, 1)},
+       pool: Finch.Pool.new("https://api.bot.qq.com", tag: config.name),
+       size: pool_size},
       {DynamicSupervisor,
        strategy: :one_for_one,
        max_restarts: 3,
        max_seconds: 30,
-       name: shard_supervisor_name(config.app_id)},
+       name: shard_supervisor_name(config.name)},
       {Coordinator, {config, tid}}
     ]
+
+    case Map.get(config, :handler) do
+      nil ->
+        :persistent_term.put({__MODULE__, config.name}, fn x -> x end)
+        Logger.debug("No handler configured for #{bot_name(config)}")
+
+      {:func, handler} when is_function(handler) ->
+        :persistent_term.put({__MODULE__, config.name}, handler)
+
+      {:module, module} when is_atom(module) ->
+        :persistent_term.put({__MODULE__, config.name}, fn event ->
+          apply(module, :handle_event, [event])
+        end)
+    end
 
     Supervisor.init(children, strategy: :rest_for_one, max_restarts: 3, max_seconds: 30)
   end
 
   @doc "Coordinator 进程在 Registry 中的名字。"
-  @spec coordinator_name(String.t()) ::
-          {:via, Registry, {LawnBot.AdapterRegistry, {module(), String.t()}}}
-  def coordinator_name(app_id),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, app_id}}}
+  @spec coordinator_name(module()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
+  def coordinator_name(bot_name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, bot_name}}}
 
   @doc "分片监督树的名字，用于 `DynamicSupervisor.which_children/1` 等。"
-  @spec shard_supervisor_name(String.t()) ::
-          {:via, Registry, {LawnBot.AdapterRegistry, {module(), String.t()}}}
-  def shard_supervisor_name(app_id),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, app_id}}}
+  @spec shard_supervisor_name(module()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
+  def shard_supervisor_name(bot_name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, bot_name}}}
 
   @doc "任务监督树的名字。"
-  @spec task_supervisor_name(String.t()) ::
-          {:via, Registry, {LawnBot.AdapterRegistry, {module(), String.t()}}}
-  def task_supervisor_name(app_id),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, app_id}}}
+  @spec task_supervisor_name(module()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
+  def task_supervisor_name(bot_name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, bot_name}}}
 
-  @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`，若未配置 `:name` 则使用 `app_id`。"
+  @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`。"
   @spec bot_name(config()) :: String.t()
-  def bot_name(config), do: "QQ Bot: #{Map.get(config, :name) || config.app_id}"
+  def bot_name(config), do: "QQ Bot: #{config.name}"
 
   @doc "将 QQ 网关事件 payload 转换为 LawnBot 事件结构体。"
   @spec to_event(map()) :: LawnBot.Event.t()

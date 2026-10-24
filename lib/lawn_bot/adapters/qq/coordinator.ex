@@ -50,7 +50,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @spec start_link({QQ.config(), ETS.tid()}) :: {:ok, pid()} | {:error, term()}
   def start_link({config, tid}),
-    do: GenServer.start_link(__MODULE__, {config, tid}, name: QQ.coordinator_name(config.app_id))
+    do: GenServer.start_link(__MODULE__, {config, tid}, name: QQ.coordinator_name(config.name))
 
   @impl true
   @spec init({QQ.config(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
@@ -68,9 +68,9 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @spec handle_info(:refresh_token | term(), state()) :: {:noreply, state()}
   def handle_info(:refresh_token, state) do
     config = state.config
-    %{app_id: app_id, client_secret: client_secret} = config
+    %{app_id: app_id, client_secret: client_secret, name: name} = config
 
-    case fetch_access_token(app_id, client_secret) do
+    case fetch_access_token(app_id, client_secret, name) do
       {:ok, token} ->
         Logger.info("Refreshed token for #{QQ.bot_name(config)}")
         TokenStore.put(state.token_table, token.access_token)
@@ -89,11 +89,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   def handle_info(_message, state), do: {:noreply, state}
 
   # 获取机器人 `access_token` 与 token 刷新时间。
-  @spec fetch_access_token(String.t(), String.t()) :: {:ok, QQ.token()} | {:error, term()}
-  defp fetch_access_token(app_id, client_secret) do
+  @spec fetch_access_token(String.t(), String.t(), module()) :: {:ok, QQ.token()} | {:error, term()}
+  defp fetch_access_token(app_id, client_secret, name) do
     case Req.post(@token_url,
            json: %{"appId" => app_id, "clientSecret" => client_secret},
-           finch: [name: LawnBot.Finch, pool_tag: app_id]
+           finch: [name: LawnBot.Finch, pool_tag: name]
          ) do
       {:ok, %Req.Response{body: %{"access_token" => access_token, "expires_in" => expires_in}}}
       when is_binary(access_token) ->
@@ -120,7 +120,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
     case Req.get(@gateway_url,
            headers: headers,
-           finch: [name: LawnBot.Finch, pool_tag: config.app_id]
+           finch: [name: LawnBot.Finch, pool_tag: config.name]
          ) do
       {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
         {:ok, parse_gateway(url, body, config)}
@@ -128,7 +128,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       _ ->
         case Req.get(@plain_gateway_url,
                headers: headers,
-               finch: [name: LawnBot.Finch, pool_tag: config.app_id]
+               finch: [name: LawnBot.Finch, pool_tag: config.name]
              ) do
           {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
             {:ok, parse_gateway(url, body, config)}
@@ -148,9 +148,9 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @spec bootstrap(state()) :: {:noreply, state()}
   defp bootstrap(state) do
     config = state.config
-    %{app_id: app_id, client_secret: client_secret} = config
+    %{app_id: app_id, client_secret: client_secret, name: name} = config
 
-    with {:ok, token} <- fetch_access_token(app_id, client_secret),
+    with {:ok, token} <- fetch_access_token(app_id, client_secret, name),
          %{access_token: access_token} = token,
          {:ok, gateway} <- fetch_gateway(access_token, config) do
       %{shards: shards, remaining: remaining} = gateway
@@ -225,7 +225,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   @spec start_shard(QQ.config(), ETS.tid(), gateway(), non_neg_integer()) :: pid() | nil
-  defp start_shard(%{app_id: app_id} = config, tid, gateway, shard_id) do
+  defp start_shard(%{name: name} = config, tid, gateway, shard_id) do
     %{url: url, shards: shards, max_concurrency: max_concurrency} = gateway
 
     shard_state = %QQ.Shard{
@@ -236,7 +236,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       token_table: tid
     }
 
-    case DynamicSupervisor.start_child(QQ.shard_supervisor_name(app_id), {QQ.Shard, shard_state}) do
+    case DynamicSupervisor.start_child(QQ.shard_supervisor_name(name), {QQ.Shard, shard_state}) do
       {:ok, pid} ->
         pid
 

@@ -334,43 +334,26 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp handle_event(payload, state) do
-    task_supervisor = QQ.task_supervisor_name(state.config.app_id)
+    name = state.config.name
     tid = state.token_table
-    app_id = state.config.app_id
+    task_supervisor = QQ.task_supervisor_name(name)
+    handler = :persistent_term.get({QQ, name}, nil)
 
-    case Map.get(state.config, :handler) do
-      nil ->
-        Logger.debug("No handler configured, ignoring event: #{inspect(payload)}")
-
-      {:func, handler} when is_function(handler) ->
-        Task.Supervisor.start_child(task_supervisor, fn ->
-          payload |> QQ.to_event() |> handler.() |> handle_reply(tid, app_id)
-        end)
-
-      {:module, module} when is_atom(module) ->
-        Task.Supervisor.start_child(task_supervisor, fn ->
-          event = QQ.to_event(payload)
-          module |> apply(:handle_event, [event]) |> handle_reply(tid, app_id)
-        end)
-
-      {:via_session_id, handlers} when is_map(handlers) ->
-        nil
-
-      {:via_func, handlers} when is_function(handlers) ->
-        nil
-    end
+    Task.Supervisor.start_child(task_supervisor, fn ->
+      payload |> QQ.to_event() |> handler.() |> handle_reply(tid, name)
+    end)
   end
 
-  @spec handle_reply(LawnBot.Reply.t(), ETS.tid(), String.t()) :: :ok
-  defp handle_reply(%LawnBot.Reply{action: action} = reply, tid, app_id)
+  @spec handle_reply(LawnBot.Reply.t(), ETS.tid(), module()) :: :ok
+  defp handle_reply(%LawnBot.Reply{action: action} = reply, tid, name)
        when action == :reply or action == :new_message do
-    send_message(reply, TokenStore.get(tid), app_id)
+    send_message(reply, TokenStore.get(tid), name)
   end
 
   defp handle_reply(_reply, _tid, _app_id), do: :ok
 
-  @spec send_message(LawnBot.Reply.t(), String.t(), String.t()) :: :ok
-  defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, app_id) do
+  @spec send_message(LawnBot.Reply.t(), String.t(), module()) :: :ok
+  defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, name) do
     session_id = event.session_id
 
     url =
@@ -387,7 +370,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
       end
 
     header = %{"Authorization" => access_token}
-    Req.post(url, json: message, headers: header, finch: [name: LawnBot.Finch, pool_tag: app_id])
+    Req.post(url, json: message, headers: header, finch: [name: LawnBot.Finch, pool_tag: name])
     :ok
   end
 
