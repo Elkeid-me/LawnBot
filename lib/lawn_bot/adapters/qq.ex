@@ -86,14 +86,14 @@ defmodule LawnBot.Adapters.QQ do
 
     case Map.get(config, :handler) do
       nil ->
-        :persistent_term.put({__MODULE__, config.name}, fn x -> x end)
+        :persistent_term.put(config.name, fn x -> x end)
         Logger.debug("No handler configured for #{bot_name(config)}")
 
       {:func, handler} when is_function(handler) ->
-        :persistent_term.put({__MODULE__, config.name}, handler)
+        :persistent_term.put(config.name, handler)
 
       {:module, module} when is_atom(module) ->
-        :persistent_term.put({__MODULE__, config.name}, fn event ->
+        :persistent_term.put(config.name, fn event ->
           apply(module, :handle_event, [event])
         end)
     end

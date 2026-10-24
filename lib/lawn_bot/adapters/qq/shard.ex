@@ -337,7 +337,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     name = state.config.name
     tid = state.token_table
     task_supervisor = QQ.task_supervisor_name(name)
-    handler = :persistent_term.get({QQ, name}, nil)
+    handler = :persistent_term.get(name, nil)
 
     Task.Supervisor.start_child(task_supervisor, fn ->
       payload |> QQ.to_event() |> handler.() |> handle_reply(tid, name)
