@@ -376,7 +376,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
         body: JSON.encode_to_iodata!(message),
         headers: headers,
         finch: [name: LawnBot.Finch, pool_tag: name],
-        decoders: [json: &JSON.decode/1]
+        decode_body: false
       )
 
     Logger.debug("QQ send_message response: #{inspect(response)}")
