@@ -24,7 +24,7 @@ defmodule LawnBot.Adapters.QQ do
   @type config() :: %{
           required(:app_id) => String.t(),
           required(:client_secret) => String.t(),
-          required(:name) => module(),
+          required(:name) => atom(),
           optional(:os) => String.t(),
           optional(:browser) => String.t(),
           optional(:device) => String.t(),
@@ -121,7 +121,7 @@ defmodule LawnBot.Adapters.QQ do
 
   @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`。"
   @spec bot_name(config()) :: String.t()
-  def bot_name(config), do: "QQ Bot: #{config.name}"
+  def bot_name(config), do: "QQ Bot: #{Atom.to_string(config.name)}"
 
   @doc "将 QQ 网关事件 payload 转换为 LawnBot 事件结构体。"
   @spec to_event(map()) :: LawnBot.Event.t()

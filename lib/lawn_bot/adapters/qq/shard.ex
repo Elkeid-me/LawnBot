@@ -369,8 +369,17 @@ defmodule LawnBot.Adapters.QQ.Shard do
         _ -> nil
       end
 
-    header = %{"Authorization" => access_token}
-    Req.post(url, json: message, headers: header, finch: [name: LawnBot.Finch, pool_tag: name])
+    headers = %{"authorization" => access_token, "content-type" => "application/json"}
+
+    response =
+      Req.post(url,
+        body: JSON.encode_to_iodata!(message),
+        headers: headers,
+        finch: [name: LawnBot.Finch, pool_tag: name],
+        decoders: [json: &JSON.decode/1]
+      )
+
+    Logger.debug("QQ send_message response: #{inspect(response)}")
     :ok
   end
 
