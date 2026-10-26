@@ -13,3 +13,5 @@ config :lawn_bot,
       }
     ]
   }
+
+config :logger, level: :info
