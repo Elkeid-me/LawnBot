@@ -149,7 +149,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
-  @spec bootstrap(state()) :: {:noreply, state()}
+  @spec bootstrap(state()) :: {:noreply, state()} | {:noreply, state(), :hibernate}
   defp bootstrap(state) do
     config = state.config
     %{app_id: app_id, client_secret: client_secret, name: name} = config
@@ -163,7 +163,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       TokenStore.put(state.token_table, token.access_token)
       state = schedule_token_refresh(state, token.expires_in)
       start_shards(state)
-      {:noreply, state}
+      {:noreply, state, :hibernate}
     else
       {:error, reason} ->
         log_failure("Failed to bootstrap", reason, config)

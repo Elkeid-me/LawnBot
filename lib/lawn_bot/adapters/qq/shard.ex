@@ -166,26 +166,25 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @spec handle_payload(map(), t()) ::
           {:ok, t()} | {:reply, {:text, String.t()}, t()} | {:close, t()}
   defp handle_payload(%{"op" => 0} = payload, state) do
-    state =
-      case payload do
-        %{"t" => "READY", "d" => %{"session_id" => session_id}} ->
-          Logger.info("READY on #{shard_name(state)}, session_id=#{session_id}")
-          %{state | session_id: session_id, seq: Map.fetch!(payload, "s")}
+    state = update_seq(payload, state)
 
-        %{"t" => "RESUMED"} ->
-          Logger.info("RESUMED on #{shard_name(state)}, from seq #{state.seq}")
-          update_seq(payload, state)
+    case payload do
+      %{"t" => "READY", "d" => %{"session_id" => session_id}} ->
+        Logger.info("READY on #{shard_name(state)}, session_id=#{session_id}")
+        {:ok, %{state | session_id: session_id}}
 
-        %{"t" => _} ->
-          handle_event(payload, state)
-          update_seq(payload, state)
+      %{"t" => "RESUMED"} ->
+        Logger.info("RESUMED on #{shard_name(state)}, from seq #{state.seq}")
+        {:ok, state}
 
-        _ ->
-          Logger.debug("Unknown payload on #{shard_name(state)}: #{inspect(payload)}")
-          update_seq(payload, state)
-      end
+      %{"t" => _} ->
+        handle_event(payload, state)
+        {:ok, state}
 
-    {:ok, state}
+      _ ->
+        Logger.debug("Unknown payload on #{shard_name(state)}: #{inspect(payload)}")
+        {:ok, state}
+    end
   end
 
   # 服务端主动下发的心跳请求，立即回包。
