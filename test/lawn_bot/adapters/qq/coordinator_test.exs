@@ -4,13 +4,10 @@ defmodule LawnBot.Adapters.QQ.CoordinatorTest do
   alias LawnBot.Adapters.QQ.Coordinator
   alias LawnBot.Adapters.QQ.TokenStore
 
-  @config %{app_id: "app", client_secret: "secret"}
-
   defp state(tid) do
     %{
-      config: @config,
-      token_table: tid,
-      gateway: nil,
+      name: :TestBot,
+      token_table_tid: tid,
       refresh_ref: nil
     }
   end
@@ -18,17 +15,16 @@ defmodule LawnBot.Adapters.QQ.CoordinatorTest do
   test "creates a child spec keyed by module" do
     tid = TokenStore.new()
 
-    assert %{id: Coordinator, start: {Coordinator, :start_link, [{@config, ^tid}]}} =
-             Coordinator.child_spec({@config, tid})
+    assert %{id: Coordinator, start: {Coordinator, :start_link, [{:TestBot, ^tid}]}} =
+             Coordinator.child_spec({:TestBot, tid})
   end
 
   test "initializes with an asynchronous bootstrap continuation" do
     tid = TokenStore.new()
 
-    assert {:ok, state, {:continue, :bootstrap}} = Coordinator.init({@config, tid})
-    assert state.config == @config
-    assert state.token_table == tid
-    assert state.gateway == nil
+    assert {:ok, state, {:continue, :bootstrap}} = Coordinator.init({:TestBot, tid})
+    assert state.name == :TestBot
+    assert state.token_table_tid == tid
     assert state.refresh_ref == nil
   end
 

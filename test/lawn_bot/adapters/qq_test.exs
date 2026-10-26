@@ -3,7 +3,9 @@ defmodule LawnBot.Adapters.QQTest do
 
   alias LawnBot.Adapters.QQ
 
-  @config %{app_id: "app", client_secret: "secret"}
+  defp config do
+    %{app_id: "app", client_secret: "secret", name: :TestBot, handler: {:func, & &1}}
+  end
 
   test "ignores configuration without credentials" do
     assert :ignore = QQ.start_link(%{})
@@ -11,9 +13,9 @@ defmodule LawnBot.Adapters.QQTest do
     assert :ignore = QQ.start_link(%{app_id: "app", client_secret: ""})
   end
 
-  test "names the bot after the configured name or app id" do
-    assert QQ.bot_name(@config) == "QQ Bot: app"
-    assert QQ.bot_name(Map.put(@config, :name, "LawnBot")) == "QQ Bot: LawnBot"
+  test "formats the configured bot name" do
+    assert QQ.bot_name(:app) == "QQ Bot: app"
+    assert QQ.bot_name(:LawnBot) == "QQ Bot: LawnBot"
   end
 
   test "converts a group message into an event" do
@@ -57,7 +59,7 @@ defmodule LawnBot.Adapters.QQTest do
     start_finch()
 
     assert {:ok, {%{strategy: :rest_for_one, intensity: 3, period: 30}, _children}} =
-             QQ.init(@config)
+             QQ.init(config())
   end
 
   # `QQ.init/1` 会为 `LawnBot.Finch` 建一个 pool 子进程，需要 Finch 实例已经存在。

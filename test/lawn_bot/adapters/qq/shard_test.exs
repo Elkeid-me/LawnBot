@@ -1,25 +1,35 @@
 defmodule LawnBot.Adapters.QQ.ShardTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias LawnBot.Adapters.QQ.Shard
   alias LawnBot.Adapters.QQ.TokenStore
 
-  @config %{app_id: "app", client_secret: "secret"}
-
   setup do
     tid = TokenStore.new()
     TokenStore.put(tid, "QQBot access-token")
+    :persistent_term.put({:TestBot, :max_concurrency}, 1)
+    :persistent_term.put({:TestBot, :intents}, 33_554_433)
+    :persistent_term.put({:TestBot, :os}, "test")
+    :persistent_term.put({:TestBot, :browser}, "test")
+    :persistent_term.put({:TestBot, :device}, "test")
+
+    on_exit(fn ->
+      :persistent_term.erase({:TestBot, :max_concurrency})
+      :persistent_term.erase({:TestBot, :intents})
+      :persistent_term.erase({:TestBot, :os})
+      :persistent_term.erase({:TestBot, :browser})
+      :persistent_term.erase({:TestBot, :device})
+    end)
+
     %{tid: tid}
   end
 
   defp state(tid, overrides \\ []) do
     struct!(
       %Shard{
-        config: @config,
-        gateway_url: "wss://gateway.example",
+        name: :TestBot,
         shard: [0, 2],
-        max_concurrency: 1,
-        token_table: tid
+        token_table_tid: tid
       },
       overrides
     )
@@ -78,7 +88,7 @@ defmodule LawnBot.Adapters.QQ.ShardTest do
   end
 
   test "identifies with configured intents", %{tid: tid} do
-    shard_state = state(tid, config: Map.put(@config, :intents, [:guilds, :group_and_c2c]))
+    shard_state = state(tid)
 
     assert {:reply, {:text, response}, updated} = Shard.handle_info(:authenticate, shard_state)
     payload = JSON.decode!(response)
