@@ -4,7 +4,7 @@ defmodule LawnBot.MixProject do
   def project do
     [
       app: :lawn_bot,
-      version: "0.1.6",
+      version: "0.1.7",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -21,7 +21,7 @@ defmodule LawnBot.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :os_mon],
+      extra_applications: [:logger],
       included_applications: [:mnesia],
       mod: {LawnBot.Application, []}
     ]

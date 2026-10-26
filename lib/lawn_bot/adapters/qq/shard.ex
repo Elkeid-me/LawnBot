@@ -17,21 +17,20 @@ defmodule LawnBot.Adapters.QQ.Shard do
   use WebSockex
 
   alias :ets, as: ETS
+  alias :persistent_term, as: PersistentTerm
   alias LawnBot.Adapters.QQ
   alias LawnBot.Adapters.QQ.TokenStore
 
   require Logger
 
   defstruct [
-    :config,
-    :gateway_url,
+    :name,
     :shard,
-    :max_concurrency,
-    :token_table,
-    :session_id,
-    :heartbeat_interval,
-    :heartbeat_ref,
-    :auth_ref,
+    :token_table_tid,
+    session_id: nil,
+    heartbeat_interval: nil,
+    heartbeat_ref: nil,
+    auth_ref: nil,
     seq: nil,
     awaiting_ack?: false
   ]
@@ -44,11 +43,9 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @type shard() :: [non_neg_integer()]
 
   @type t() :: %__MODULE__{
-          config: QQ.config(),
-          gateway_url: String.t(),
+          name: atom(),
           shard: shard(),
-          max_concurrency: pos_integer(),
-          token_table: ETS.tid(),
+          token_table_tid: ETS.tid(),
           session_id: String.t() | nil,
           heartbeat_interval: pos_integer() | nil,
           heartbeat_ref: reference() | nil,
@@ -56,24 +53,6 @@ defmodule LawnBot.Adapters.QQ.Shard do
           seq: non_neg_integer() | nil,
           awaiting_ack?: boolean()
         }
-
-  # 事件订阅 intents 位定义
-  @intents %{
-    guilds: 1,
-    guild_members: 2,
-    guild_messages: 512,
-    guild_message_reactions: 1_024,
-    direct_message: 4_096,
-    group_and_c2c: 33_554_432,
-    interaction: 67_108_864,
-    message_audit: 134_217_728,
-    forums_event: 268_435_456,
-    audio_action: 536_870_912,
-    public_guild_messages: 1_073_741_824
-  }
-
-  # 未配置 intents 时只订阅默认就有权限的事件，避免无权限 intents 导致网关直接断开连接。
-  @default_intents [:guilds, :guild_members, :public_guild_messages]
 
   @default_heartbeat_interval 45_000
   @max_backoff 60_000
@@ -83,10 +62,11 @@ defmodule LawnBot.Adapters.QQ.Shard do
     opts = [
       async: true,
       handle_initial_conn_failure: true,
-      name: via_tuple(state.config.app_id, shard_id(state))
+      name: via_tuple(state.name, shard_id(state))
     ]
 
-    WebSockex.start_link(state.gateway_url, __MODULE__, state, opts)
+    gateway_url = PersistentTerm.get({state.name, :gateway_url})
+    WebSockex.start_link(gateway_url, __MODULE__, state, opts)
   end
 
   def child_spec(state) do
@@ -127,11 +107,11 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   @impl true
   def handle_info(:authenticate, state) do
-    access_token = TokenStore.get(state.token_table)
+    access_token = TokenStore.get(state.token_table_tid)
 
     {action, payload} =
       case state.session_id do
-        nil -> {"identifying", identify_payload(access_token, state.config, state.shard)}
+        nil -> {"identifying", identify_payload(access_token, state.name, state.shard)}
         session_id -> {"resuming", resume_payload(access_token, session_id, state.seq)}
       end
 
@@ -218,8 +198,8 @@ defmodule LawnBot.Adapters.QQ.Shard do
     {:ok, state}
   end
 
-  defp via_tuple(app_id, shard_id),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, app_id, shard_id}}}
+  defp via_tuple(name, shard_id),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, name, shard_id}}}
 
   @spec update_seq(nil | non_neg_integer() | map(), t()) :: t()
   defp update_seq(nil, state), do: state
@@ -238,7 +218,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
   defp authenticate_delay(state) do
     shard_id = shard_id(state)
-    concurrency = max(state.max_concurrency || 1, 1)
+    concurrency = PersistentTerm.get({state.name, :max_concurrency})
     round(shard_id * 5_000 / concurrency)
   end
 
@@ -269,28 +249,26 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp shard_id(%__MODULE__{shard: [shard_id, _]}), do: shard_id
 
   @spec shard_name(t()) :: String.t()
-  defp shard_name(%__MODULE__{shard: [shard_id, shards], config: config}),
-    do: "#{QQ.bot_name(config)} shard #{shard_id + 1}/#{shards}"
+  defp shard_name(%__MODULE__{shard: [shard_id, shards], name: name}),
+    do: "#{QQ.bot_name(name)} shard #{shard_id + 1}/#{shards}"
 
   # 构造 OpCode 2 Identify 载荷，携带分片参数以启用水平分片。
-  @spec identify_payload(String.t(), QQ.config(), shard()) :: map()
-  defp identify_payload(access_token, config, shard) do
+  @spec identify_payload(String.t(), atom(), shard()) :: map()
+  defp identify_payload(access_token, name, shard) do
     %{
       "op" => 2,
       "d" => %{
         "token" => access_token,
-        "intents" => intents(config),
+        "intents" => PersistentTerm.get({name, :intents}),
         "shard" => shard,
         "properties" => %{
-          "$os" => Map.get(config, :os, default_os()),
-          "$browser" => Map.get(config, :browser, "LawnBot"),
-          "$device" => Map.get(config, :device, "LawnBot")
+          "$os" => PersistentTerm.get({name, :os}),
+          "$browser" => PersistentTerm.get({name, :browser}),
+          "$device" => PersistentTerm.get({name, :device})
         }
       }
     }
   end
-
-  defp default_os, do: to_string(elem(:os.type(), 1))
 
   # 构造 OpCode 6 Resume 载荷，用 session_id 与 seq 补发断线期间遗漏的事件。
   @spec resume_payload(String.t(), String.t(), non_neg_integer() | nil) :: map()
@@ -305,36 +283,9 @@ defmodule LawnBot.Adapters.QQ.Shard do
     }
   end
 
-  # 计算本次连接订阅的 intents 位掩码。
-  #
-  # `:intents` 可以直接给整数，也可以给意图原子列表；未知意图会被忽略并告警，
-  # 因为携带无权限的 intents 会导致网关直接关闭连接。
-  @spec intents(QQ.config()) :: non_neg_integer()
-  defp intents(config), do: config |> Map.get(:intents, @default_intents) |> normalize_intents()
-  @spec normalize_intents(non_neg_integer() | [atom()] | any()) :: non_neg_integer()
-  defp normalize_intents(intents) when is_integer(intents) and intents >= 0, do: intents
-
-  defp normalize_intents(intents) when is_list(intents) do
-    Enum.reduce(intents, 0, fn intent, acc ->
-      case Map.get(@intents, intent) do
-        nil ->
-          Logger.warning("Ignoring unknown QQ intent: #{inspect(intent)}")
-          acc
-
-        bit ->
-          acc + bit
-      end
-    end)
-  end
-
-  defp normalize_intents(other) do
-    Logger.warning("Ignoring invalid QQ intents: #{inspect(other)}")
-    normalize_intents(@default_intents)
-  end
-
   defp handle_event(payload, state) do
-    name = state.config.name
-    tid = state.token_table
+    name = state.name
+    tid = state.token_table_tid
     task_supervisor = QQ.task_supervisor_name(name)
     handler = :persistent_term.get(name, nil)
 
@@ -349,7 +300,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     send_message(reply, TokenStore.get(tid), name)
   end
 
-  defp handle_reply(_reply, _tid, _app_id), do: :ok
+  defp handle_reply(_reply, _tid, _name), do: :ok
 
   @spec send_message(LawnBot.Reply.t(), String.t(), module()) :: :ok
   defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, name) do

@@ -19,6 +19,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   use GenServer
 
   alias :ets, as: ETS
+  alias :persistent_term, as: PersistentTerm
   alias LawnBot.Adapters.QQ
   alias LawnBot.Adapters.QQ.TokenStore
 
@@ -35,27 +36,21 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @token_url "https://api.bot.qq.com/app/getAppAccessToken"
   @gateway_url "https://api.bot.qq.com/gateway/bot"
   @plain_gateway_url "https://api.bot.qq.com/gateway"
-  @type gateway() :: %{
-          url: String.t(),
-          shards: pos_integer(),
-          max_concurrency: pos_integer(),
-          remaining: non_neg_integer() | nil
-        }
+
   @type state() :: %{
-          config: QQ.config(),
-          token_table: ETS.tid(),
-          gateway: gateway() | nil,
+          name: atom(),
+          token_table_tid: ETS.tid(),
           refresh_ref: reference() | nil
         }
 
-  @spec start_link({QQ.config(), ETS.tid()}) :: {:ok, pid()} | {:error, term()}
-  def start_link({config, tid}),
-    do: GenServer.start_link(__MODULE__, {config, tid}, name: QQ.coordinator_name(config.name))
+  @spec start_link({atom(), ETS.tid()}) :: {:ok, pid()} | {:error, term()}
+  def start_link({name, tid}),
+    do: GenServer.start_link(__MODULE__, {name, tid}, name: QQ.coordinator_name(name))
 
   @impl true
-  @spec init({QQ.config(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
-  def init({config, tid}) do
-    state = %{config: config, token_table: tid, gateway: nil, refresh_ref: nil}
+  @spec init({atom(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
+  def init({name, tid}) do
+    state = %{name: name, token_table_tid: tid, gateway: nil, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
   end
 
@@ -67,17 +62,16 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @impl true
   @spec handle_info(:refresh_token | term(), state()) :: {:noreply, state()}
   def handle_info(:refresh_token, state) do
-    config = state.config
-    %{app_id: app_id, client_secret: client_secret, name: name} = config
+    name = state.name
 
-    case fetch_access_token(app_id, client_secret, name) do
+    case fetch_access_token(name) do
       {:ok, token} ->
-        Logger.info("Refreshed token for #{QQ.bot_name(config)}")
-        TokenStore.put(state.token_table, token.access_token)
+        Logger.info("Refreshed token for #{QQ.bot_name(name)}")
+        TokenStore.put(state.token_table_tid, token.access_token)
         {:noreply, schedule_token_refresh(state, token.expires_in)}
 
       {:error, reason} ->
-        log_failure("Failed to refresh token for", reason, config)
+        log_failure("Failed to refresh token for", reason, name)
 
         {:noreply,
          %{state | refresh_ref: Process.send_after(self(), :refresh_token, @token_refresh_retry)}}
@@ -89,8 +83,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   def handle_info(_message, state), do: {:noreply, state}
 
   # 获取机器人 `access_token` 与 token 刷新时间。
-  @spec fetch_access_token(String.t(), String.t(), module()) :: {:ok, QQ.token()} | {:error, term()}
-  defp fetch_access_token(app_id, client_secret, name) do
+  @spec fetch_access_token(atom()) :: {:ok, QQ.token()} | {:error, term()}
+  defp fetch_access_token(name) do
+    app_id = PersistentTerm.get({name, :app_id})
+    client_secret = PersistentTerm.get({name, :client_secret})
+
     case Req.post(@token_url,
            headers: %{"content-type" => "application/json"},
            body: JSON.encode_to_iodata!(%{"appId" => app_id, "clientSecret" => client_secret}),
@@ -116,26 +113,26 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   # 获取网关地址与建议分片数。
-  @spec fetch_gateway(String.t(), QQ.config()) :: {:ok, gateway()} | {:error, term()}
-  defp fetch_gateway(access_token, config) do
+  @spec fetch_gateway(String.t(), atom()) :: {:ok, map()} | {:error, term()}
+  defp fetch_gateway(access_token, name) do
     headers = %{"authorization" => access_token, "content-type" => "application/json"}
 
     case Req.get(@gateway_url,
            headers: headers,
-           finch: [name: LawnBot.Finch, pool_tag: config.name],
+           finch: [name: LawnBot.Finch, pool_tag: name],
            decoders: [json: &JSON.decode/1]
          ) do
       {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
-        {:ok, parse_gateway(url, body, config)}
+        {:ok, parse_gateway(url, body, name)}
 
       _ ->
         case Req.get(@plain_gateway_url,
                headers: headers,
-               finch: [name: LawnBot.Finch, pool_tag: config.name],
+               finch: [name: LawnBot.Finch, pool_tag: name],
                decoders: [json: &JSON.decode/1]
              ) do
           {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
-            {:ok, parse_gateway(url, body, config)}
+            {:ok, parse_gateway(url, body, name)}
 
           {:ok, %Req.Response{body: %{"code" => code, "message" => message}}} ->
             {:error, {:qq_api, code, message}}
@@ -151,31 +148,32 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @spec bootstrap(state()) :: {:noreply, state()} | {:noreply, state(), :hibernate}
   defp bootstrap(state) do
-    config = state.config
-    %{app_id: app_id, client_secret: client_secret, name: name} = config
+    name = state.name
 
-    with {:ok, token} <- fetch_access_token(app_id, client_secret, name),
+    with {:ok, token} <- fetch_access_token(name),
          %{access_token: access_token} = token,
-         {:ok, gateway} <- fetch_gateway(access_token, config) do
-      %{shards: shards, remaining: remaining} = gateway
+         {:ok, gateway} <- fetch_gateway(access_token, name) do
+      TokenStore.put(state.token_table_tid, token.access_token)
+      %{url: url, shards: shards, max_concurrency: max_concurrency, remaining: remaining} = gateway
+      PersistentTerm.put({name, :gateway_url}, url)
+      PersistentTerm.put({name, :shards}, shards)
+      PersistentTerm.put({name, :max_concurrency}, max_concurrency)
       warn_on_session_limit(remaining, shards)
-      state = %{state | gateway: gateway}
-      TokenStore.put(state.token_table, token.access_token)
       state = schedule_token_refresh(state, token.expires_in)
       start_shards(state)
       {:noreply, state, :hibernate}
     else
       {:error, reason} ->
-        log_failure("Failed to bootstrap", reason, config)
+        log_failure("Failed to bootstrap", reason, name)
         Process.send_after(self(), :bootstrap, @bootstrap_retry)
         {:noreply, state}
     end
   end
 
-  @spec parse_gateway(String.t(), map(), QQ.config()) :: gateway()
-  defp parse_gateway(url, body, config) do
+  @spec parse_gateway(String.t(), map(), atom()) :: map()
+  defp parse_gateway(url, body, name) do
     limit = Map.get(body, "session_start_limit") || %{}
-    shards = positive_int(Map.get(config, :shards) || Map.get(body, "shards"), 1)
+    shards = positive_int(PersistentTerm.get({name, :shards}) || Map.get(body, "shards"), 1)
 
     %{
       url: url,
@@ -219,25 +217,23 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp non_negative_int(_value), do: nil
 
   @spec start_shards(state()) :: :ok
-  defp start_shards(%{config: config, token_table: tid, gateway: gateway}) do
+  defp start_shards(%{name: name, token_table_tid: tid}) do
+    shards = PersistentTerm.get({name, :shards})
+
     started =
-      0..(gateway.shards - 1)
-      |> Stream.map(fn shard_id -> start_shard(config, tid, gateway, shard_id) end)
+      0..(shards - 1)
+      |> Stream.map(fn shard_id -> start_shard(name, tid, shard_id, shards) end)
       |> Enum.count(&is_pid/1)
 
-    Logger.info("#{QQ.bot_name(config)} started #{started}/#{gateway.shards} shard(s)")
+    Logger.info("#{QQ.bot_name(name)} started #{started}/#{shards} shard(s)")
   end
 
-  @spec start_shard(QQ.config(), ETS.tid(), gateway(), non_neg_integer()) :: pid() | nil
-  defp start_shard(%{name: name} = config, tid, gateway, shard_id) do
-    %{url: url, shards: shards, max_concurrency: max_concurrency} = gateway
-
+  @spec start_shard(atom(), ETS.tid(), non_neg_integer(), pos_integer()) :: pid() | nil
+  defp start_shard(name, tid, shard_id, shards) do
     shard_state = %QQ.Shard{
-      config: config,
-      gateway_url: url,
+      name: name,
       shard: [shard_id, shards],
-      max_concurrency: max_concurrency,
-      token_table: tid
+      token_table_tid: tid
     }
 
     case DynamicSupervisor.start_child(QQ.shard_supervisor_name(name), {QQ.Shard, shard_state}) do
@@ -248,7 +244,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         pid
 
       {:error, reason} ->
-        Logger.error("Failed to start #{QQ.bot_name(config)} shard #{shard_id}: #{inspect(reason)}")
+        Logger.error("Failed to start #{QQ.bot_name(name)} shard #{shard_id}: #{inspect(reason)}")
         nil
     end
   end
@@ -273,17 +269,17 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
   end
 
-  @spec log_failure(String.t(), term(), QQ.config()) :: :ok
-  defp log_failure(prefix, reason, config) do
+  @spec log_failure(String.t(), term(), atom()) :: :ok
+  defp log_failure(prefix, reason, name) do
     case reason do
       {:qq_api, code, message} ->
-        Logger.error("#{prefix} #{QQ.bot_name(config)}: #{code}, #{message}")
+        Logger.error("#{prefix} #{QQ.bot_name(name)}: #{code}, #{message}")
 
       {:unexpected_response, _} ->
-        Logger.error("#{prefix} #{QQ.bot_name(config)}: unexpected response")
+        Logger.error("#{prefix} #{QQ.bot_name(name)}: unexpected response")
 
       exception ->
-        Logger.error("#{prefix} #{QQ.bot_name(config)}: #{inspect(exception)}")
+        Logger.error("#{prefix} #{QQ.bot_name(name)}: #{inspect(exception)}")
     end
   end
 
