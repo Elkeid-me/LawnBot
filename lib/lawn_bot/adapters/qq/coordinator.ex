@@ -50,7 +50,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @impl true
   @spec init({atom(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
   def init({name, tid}) do
-    state = %{name: name, token_table_tid: tid, gateway: nil, refresh_ref: nil}
+    state = %{name: name, token_table_tid: tid, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
   end
 
