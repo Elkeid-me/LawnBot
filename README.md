@@ -60,3 +60,8 @@ mix credo  # 代码风格，也可加 `--format json`获取 JSON 格式输出
 mix format # 代码格式化
 mix docs   # 生成 ExDoc 文档
 ```
+
+## LICENSE
+
+- LawnBot 0.1.8 及之前：MIT 许可证
+- LawnBot 0.1.9 及之后：GPLv3 许可证
