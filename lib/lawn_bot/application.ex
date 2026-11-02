@@ -47,18 +47,16 @@ defmodule LawnBot.Event do
     :message_type,
     :message_id,
     :author_id,
-    :content,
-    :extra
+    :content
   ]
 
   @type t :: %__MODULE__{
-          session_type: :group | :c2c | nil,
-          session_id: String.t() | nil,
+          session_type: :group | :c2c,
+          session_id: String.t(),
           message_type: :normal | :new_friend | :delete_friend | nil,
-          message_id: String.t() | nil,
+          message_id: String.t(),
           author_id: String.t(),
-          content: LawnBot.Event.Content.t(),
-          extra: map() | nil
+          content: LawnBot.Event.Content.t()
         }
 end
 
@@ -66,14 +64,23 @@ defmodule LawnBot.Event.Attachment do
   @moduledoc "LawnBot 事件附件结构体。"
   defstruct [:filename, :mime_type, :size, :width, :height, :url]
 
-  @type t :: %__MODULE__{
-          filename: String.t(),
-          mime_type: String.t(),
-          size: non_neg_integer(),
-          width: non_neg_integer() | nil,
-          height: non_neg_integer() | nil,
-          url: String.t()
-        }
+  @type t ::
+          %__MODULE__{
+            filename: String.t(),
+            mime_type: String.t(),
+            size: non_neg_integer(),
+            width: nil,
+            height: nil,
+            url: String.t()
+          }
+          | %__MODULE__{
+              filename: String.t(),
+              mime_type: String.t(),
+              size: non_neg_integer(),
+              width: non_neg_integer(),
+              height: non_neg_integer(),
+              url: String.t()
+            }
 end
 
 defmodule LawnBot.Event.History do
@@ -98,12 +105,52 @@ end
 
 defmodule LawnBot.Reply do
   @moduledoc "LawnBot 回复结构体。"
-  defstruct [:action, :event]
+  alias LawnBot.Event.Attachment
 
-  @type t :: %__MODULE__{
-          action: :new_message | :reply | :ignore,
-          event: LawnBot.Event.t() | nil
-        }
+  defstruct [
+    :action,
+    :session_id,
+    :reply_message_id,
+    :session_type,
+    :text,
+    :attachment,
+    :reference_message_id
+  ]
+
+  @typep attachment_type ::
+           Attachment.t()
+           | {:path, String.t()}
+           | {:url, String.t()}
+           | {:binary, binary()}
+
+  @type t ::
+          %__MODULE__{
+            action: :ignore,
+            session_id: nil,
+            reply_message_id: nil,
+            session_type: nil,
+            text: nil,
+            attachment: nil,
+            reference_message_id: nil
+          }
+          | %__MODULE__{
+              action: :new_message,
+              session_id: String.t(),
+              reply_message_id: nil,
+              session_type: :group | :c2c,
+              text: String.t() | nil,
+              attachment: attachment_type() | nil,
+              reference_message_id: String.t() | nil
+            }
+          | %__MODULE__{
+              action: :reply,
+              session_id: String.t(),
+              reply_message_id: String.t(),
+              session_type: :group | :c2c,
+              text: String.t() | nil,
+              attachment: attachment_type() | nil,
+              reference_message_id: String.t() | nil
+            }
 end
 
 defmodule LawnBot.Handler do

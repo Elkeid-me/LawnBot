@@ -64,9 +64,8 @@ defmodule LawnBot.Adapters.QQ do
   """
   @spec start_link(config()) :: {:ok, pid()} | {:error, term()} | :ignore
   def start_link(%{app_id: app_id, client_secret: client_secret, name: name} = config)
-      when is_binary(app_id) and is_binary(client_secret) and is_atom(name) and app_id != "" and
-             client_secret != "",
-      do: Supervisor.start_link(__MODULE__, config, name: via_tuple(name))
+      when is_binary(app_id) and app_id != "" and is_binary(client_secret) and client_secret != "" and
+             is_atom(name), do: Supervisor.start_link(__MODULE__, config, name: via_tuple(name))
 
   def start_link(_config) do
     Logger.warning("Skipping QQ adapter: no app_id or client_secret set.")
@@ -85,7 +84,7 @@ defmodule LawnBot.Adapters.QQ do
     Logger.info("Starting #{bot_name(config.name)}")
     tid = TokenStore.new()
 
-    case Map.get(config, :handler) do
+    case config[:handler] do
       nil ->
         PersistentTerm.put(config.name, fn x -> x end)
         Logger.debug("No handler configured for #{bot_name(config.name)}")
@@ -99,8 +98,8 @@ defmodule LawnBot.Adapters.QQ do
         end)
     end
 
-    PersistentTerm.put({config.name, :app_id}, Map.get(config, :app_id))
-    PersistentTerm.put({config.name, :client_secret}, Map.get(config, :client_secret))
+    PersistentTerm.put({config.name, :app_id}, config[:app_id])
+    PersistentTerm.put({config.name, :client_secret}, config[:client_secret])
 
     intents = config |> Map.get(:intents, @default_intents) |> normalize_intents()
 
@@ -112,7 +111,7 @@ defmodule LawnBot.Adapters.QQ do
     PersistentTerm.put({config.name, :device}, Map.get(config, :device, "LawnBot"))
 
     children = [
-      {Task.Supervisor, name: task_supervisor_name(config.name)},
+      {Task.Supervisor, name: task_supervisor_via_tuple(config.name)},
       {Finch.Pool,
        finch: LawnBot.Finch,
        pool: Finch.Pool.new("https://api.bot.qq.com", tag: config.name),
@@ -121,7 +120,7 @@ defmodule LawnBot.Adapters.QQ do
        strategy: :one_for_one,
        max_restarts: 3,
        max_seconds: 30,
-       name: shard_supervisor_name(config.name)},
+       name: shard_supervisor_via_tuple(config.name)},
       {Coordinator, {config.name, tid}}
     ]
 
@@ -129,22 +128,22 @@ defmodule LawnBot.Adapters.QQ do
   end
 
   @doc "Coordinator 进程在 Registry 中的名字。"
-  @spec coordinator_name(module()) ::
+  @spec coordinator_via_tuple(module()) ::
           {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
-  def coordinator_name(bot_name),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, bot_name}}}
+  def coordinator_via_tuple(name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, name}}}
 
   @doc "分片监督树的名字，用于 `DynamicSupervisor.which_children/1` 等。"
-  @spec shard_supervisor_name(module()) ::
+  @spec shard_supervisor_via_tuple(module()) ::
           {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
-  def shard_supervisor_name(bot_name),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, bot_name}}}
+  def shard_supervisor_via_tuple(name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, name}}}
 
   @doc "任务监督树的名字。"
-  @spec task_supervisor_name(module()) ::
+  @spec task_supervisor_via_tuple(module()) ::
           {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
-  def task_supervisor_name(bot_name),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, bot_name}}}
+  def task_supervisor_via_tuple(name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, name}}}
 
   @doc "机器人名称，用于日志输出。形如 `QQ Bot: <name>`。"
   @spec bot_name(atom()) :: String.t()
@@ -166,8 +165,7 @@ defmodule LawnBot.Adapters.QQ do
       message_type: message_type,
       message_id: message_id,
       author_id: author_id,
-      content: content,
-      extra: nil
+      content: content
     }
   end
 
@@ -250,7 +248,7 @@ defmodule LawnBot.Adapters.QQ do
   @spec normalize_intents([atom()] | any()) :: non_neg_integer()
   defp normalize_intents(intents) when is_list(intents) do
     Enum.reduce(intents, 0, fn intent, acc ->
-      case Map.get(@intents, intent) do
+      case @intents[intent] do
         nil ->
           Logger.warning("Ignoring unknown QQ intent: #{inspect(intent)}")
           acc

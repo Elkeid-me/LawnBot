@@ -4,7 +4,7 @@ defmodule LawnBot.MixProject do
   def project do
     [
       app: :lawn_bot,
-      version: "0.1.9",
+      version: "0.2.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -29,6 +29,7 @@ defmodule LawnBot.MixProject do
     [
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+      {:nimble_options, "~> 1.1"},
       {:req, "~> 0.7.5"},
       {:styler, "~> 1.12", only: [:dev, :test], runtime: false},
       {:websockex, "~> 0.5.1"}

@@ -234,7 +234,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp cancel_timer(state, key) do
-    case Map.get(state, key) do
+    case state[key] do
       nil ->
         state
 
@@ -286,7 +286,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp handle_event(payload, state) do
     name = state.name
     tid = state.token_table_tid
-    task_supervisor = QQ.task_supervisor_name(name)
+    task_supervisor = QQ.task_supervisor_via_tuple(name)
     handler = :persistent_term.get(name, nil)
 
     Task.Supervisor.start_child(task_supervisor, fn ->
@@ -303,20 +303,25 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp handle_reply(_reply, _tid, _name), do: :ok
 
   @spec send_message(LawnBot.Reply.t(), String.t(), module()) :: :ok
-  defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, name) do
-    session_id = event.session_id
-
+  defp send_message(reply, access_token, name) do
     url =
-      case(event.session_type) do
-        :group -> "https://api.bot.qq.com/v2/groups/#{session_id}/messages"
-        :c2c -> "https://api.bot.qq.com/v2/users/#{session_id}/messages"
+      case(reply.session_type) do
+        :group -> "https://api.bot.qq.com/v2/groups/#{reply.session_id}/messages"
+        :c2c -> "https://api.bot.qq.com/v2/users/#{reply.session_id}/messages"
       end
 
     message =
-      case action do
-        :reply -> event |> build_message_content() |> Map.put("msg_id", event.message_id)
-        :new_message -> build_message_content(event)
-        _ -> nil
+      case reply.action do
+        :reply ->
+          reply
+          |> build_message_content(access_token, name)
+          |> Map.put("msg_id", reply.reply_message_id)
+
+        :new_message ->
+          build_message_content(reply, access_token, name)
+
+        _ ->
+          nil
       end
 
     headers = %{"authorization" => access_token, "content-type" => "application/json"}
@@ -332,11 +337,77 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   # 构造消息发送的 JSON 载荷
-  # todo
-  defp build_message_content(event) do
-    %{
-      "msg_type" => 0,
-      "content" => event.content
+  @spec build_message_content(LawnBot.Reply.t(), String.t(), atom()) :: map()
+  defp build_message_content(reply, access_token, name) do
+    media_info_task =
+      case reply.attachment do
+        nil -> nil
+        _ -> Task.async(fn -> upload_attachment(reply, access_token, name) end)
+      end
+
+    payload =
+      case reply.text do
+        nil -> %{}
+        text -> %{"content" => text}
+      end
+
+    payload =
+      case reply.reference_message_id do
+        nil -> payload
+        id -> Map.put(payload, "message_reference", %{"message_id" => id})
+      end
+
+    case media_info_task do
+      nil ->
+        Map.put(payload, "msg_type", 0)
+
+      task ->
+        payload
+        |> Map.put("msg_type", 7)
+        |> Map.put("media", %{"file_info" => Task.await(task, 30_000)})
+    end
+  end
+
+  @spec upload_attachment(LawnBot.Reply.t(), String.t(), atom()) :: nil
+  defp upload_attachment(%LawnBot.Reply{attachment: {:path, path}}, access_token, name)
+       when is_binary(path) do
+    nil
+  end
+
+  @spec upload_attachment(LawnBot.Reply.t(), String.t(), atom()) :: nil
+  defp upload_attachment(%LawnBot.Reply{attachment: {:url, url}} = reply, access_token, name)
+       when is_binary(url) do
+    headers = %{"authorization" => access_token, "content-type" => "application/json"}
+
+    body = %{
+      "file_type" => 1,
+      "url" => url,
+      "srv_send_msg" => false
     }
+
+    url =
+      case reply.session_type do
+        :group -> "https://api.bot.qq.com/v2/groups/#{reply.session_id}/files"
+        :c2c -> "https://api.bot.qq.com/v2/users/#{reply.session_id}/files"
+      end
+
+    case Req.post(url,
+           body: JSON.encode_to_iodata!(body),
+           headers: headers,
+           finch: [name: LawnBot.Finch, pool_tag: name],
+           decoders: [json: &JSON.decode/1]
+         ) do
+      {:ok, %Req.Response{status: 200, body: %{"file_info" => file_info}}}
+      when is_binary(file_info) ->
+        file_info
+
+      {:ok, %Req.Response{status: 400, body: %{"message" => message}}} ->
+        Logger.warning("Failed to upload attachment: #{message}")
+        nil
+
+      {:error, reason} ->
+        Logger.warning("Failed to upload attachment: #{inspect(reason)}")
+        nil
+    end
   end
 end

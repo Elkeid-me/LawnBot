@@ -45,7 +45,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @spec start_link({atom(), ETS.tid()}) :: {:ok, pid()} | {:error, term()}
   def start_link({name, tid}),
-    do: GenServer.start_link(__MODULE__, {name, tid}, name: QQ.coordinator_name(name))
+    do: GenServer.start_link(__MODULE__, {name, tid}, name: QQ.coordinator_via_tuple(name))
 
   @impl true
   @spec init({atom(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
@@ -172,14 +172,14 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   @spec parse_gateway(String.t(), map(), atom()) :: map()
   defp parse_gateway(url, body, name) do
-    limit = Map.get(body, "session_start_limit") || %{}
+    limit = Map.get(body, "session_start_limit", %{})
     shards = positive_int(PersistentTerm.get({name, :shards}) || Map.get(body, "shards"), 1)
 
     %{
       url: url,
       shards: shards,
       max_concurrency: positive_int(Map.get(limit, "max_concurrency"), 1),
-      remaining: non_negative_int(Map.get(limit, "remaining"))
+      remaining: non_negative_int(limit["remaining"])
     }
   end
 
@@ -236,7 +236,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       token_table_tid: tid
     }
 
-    case DynamicSupervisor.start_child(QQ.shard_supervisor_name(name), {QQ.Shard, shard_state}) do
+    case DynamicSupervisor.start_child(QQ.shard_supervisor_via_tuple(name), {QQ.Shard, shard_state}) do
       {:ok, pid} ->
         pid
 
