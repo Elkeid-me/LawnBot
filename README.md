@@ -1,4 +1,7 @@
-# LawnBot
+<!-- TODO: 0.2 稳定时 `dev` 改为 `main` -->
+
+![LawnBot](https://github.com/Elkeid-me/LawnBot/raw/dev/assets/readme_logo_light.png#gh-light-mode-only)
+![LawnBot](https://github.com/Elkeid-me/LawnBot/raw/dev/assets/readme_logo_dark.png#gh-dark-mode-only)
 
 基于 Elixir 的聊天机器人框架。当前提供 QQ 官方机器人平台 的 WebSocket 接入。
 
