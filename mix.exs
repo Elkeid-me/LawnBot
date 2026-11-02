@@ -36,4 +36,11 @@ defmodule LawnBot.MixProject do
       {:websockex, "~> 0.5.1"}
     ]
   end
+
+  defp docs do
+    [
+      main: "readme",
+      logo: "assets/ex_doc_logo.png"
+    ]
+  end
 end
