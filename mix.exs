@@ -13,9 +13,7 @@ defmodule LawnBot.MixProject do
       name: "LawnBot",
       source_url: "https://github.com/Elkeid-me/LawnBot",
       homepage_url: "http://elkeid-me.github.io/LawnBot",
-      docs: [
-        extras: ["README.md"]
-      ]
+      docs: docs()
     ]
   end
 
@@ -39,7 +37,7 @@ defmodule LawnBot.MixProject do
 
   defp docs do
     [
-      main: "readme",
+      extras: ["README.md"],
       logo: "assets/ex_doc_logo.png"
     ]
   end
