@@ -14,8 +14,8 @@ defmodule LawnBot.Application do
   def start(_type, _args) do
     children = [
       {Registry, name: LawnBot.AdapterRegistry, keys: :unique},
-      LawnBot.AdapterSupervisor,
-      {Finch, name: LawnBot.Finch}
+      {Finch, name: LawnBot.Finch},
+      LawnBot.AdapterSupervisor
     ]
 
     with gateways when is_map(gateways) and map_size(gateways) > 0 <-
