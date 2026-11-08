@@ -8,8 +8,6 @@ defmodule LawnBot.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-
-      # Docs
       name: "LawnBot",
       source_url: "https://github.com/Elkeid-me/LawnBot",
       homepage_url: "http://elkeid-me.github.io/LawnBot",
@@ -29,7 +27,7 @@ defmodule LawnBot.MixProject do
     [
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
-      {:nimble_options, "~> 1.1"},
+      {:nimble_options, "~> 1.2"},
       {:req, "~> 0.7.5"},
       {:styler, "~> 1.12", only: [:dev, :test], runtime: false},
       {:websockex, "~> 0.5.1"}
