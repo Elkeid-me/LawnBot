@@ -1,5 +1,8 @@
 defmodule LawnBot.Adapters.QQ.Coordinator do
-  @moduledoc false
+  @moduledoc """
+  A GenServer that coordinates the lifecycle of a QQ bot, including authentication and gateway management.
+  """
+
   use GenServer
 
   alias :persistent_term, as: PersistentTerm

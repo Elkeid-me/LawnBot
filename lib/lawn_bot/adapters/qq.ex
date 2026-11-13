@@ -1,5 +1,8 @@
 defmodule LawnBot.Adapters.QQ do
-  @moduledoc false
+  @moduledoc """
+  The QQ adapter for LawnBot. Using official QQ Bot API to receive (WebSocket) and send messages.
+  """
+
   @behaviour LawnBot.Adapter
 
   use Supervisor

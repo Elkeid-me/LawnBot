@@ -1,5 +1,7 @@
 defmodule LawnBot.ExampleHandler do
-  @moduledoc false
+  @moduledoc """
+  An example implementation of LawnBot.Handler behaviour. Echo the message back to the user.
+  """
   @behaviour LawnBot.Handler
 
   alias LawnBot.Event.Content

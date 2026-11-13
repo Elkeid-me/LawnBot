@@ -1,5 +1,11 @@
 defmodule LawnBot.Utils do
-  @moduledoc false
+  @moduledoc """
+  Utility functions for LawnBot. For example, checking if a value is a non-empty string.
+  """
+
+  import Bitwise
+
+  @max_backoff_ms 64_000
 
   @doc ~S"""
   Check if the given value is a non-empty string.
@@ -12,7 +18,7 @@ defmodule LawnBot.Utils do
       iex> LawnBot.Utils("")
       {:error, "must be a non-empty string"}
   """
-  @spec check_empty_string(any()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec check_empty_string(term()) :: {:ok, String.t()} | {:error, String.t()}
   def check_empty_string(value) when is_binary(value) and value != "", do: {:ok, value}
   def check_empty_string(_value), do: {:error, "must be a non-empty string"}
 
@@ -40,7 +46,7 @@ defmodule LawnBot.Utils do
       iex> LawnBot.Utils.check_pos_int("5Hello")
       {:error, "must be a positive integer"}
   """
-  @spec check_pos_int(any()) :: {:ok, pos_integer()} | {:error, String.t()}
+  @spec check_pos_int(term()) :: {:ok, pos_integer()} | {:error, String.t()}
   def check_pos_int(value) when is_integer(value) and value > 0, do: {:ok, value}
 
   def check_pos_int(value) when is_binary(value) do
@@ -75,7 +81,7 @@ defmodule LawnBot.Utils do
       iex> LawnBot.Utils.check_non_neg_int("5Hello")
       {:error, "must be a non-negative integer"}
   """
-  @spec check_non_neg_int(any()) :: {:ok, pos_integer()} | {:error, String.t()}
+  @spec check_non_neg_int(term()) :: {:ok, pos_integer()} | {:error, String.t()}
   def check_non_neg_int(value) when is_integer(value) and value >= 0, do: {:ok, value}
 
   def check_non_neg_int(value) when is_binary(value) do
@@ -86,4 +92,42 @@ defmodule LawnBot.Utils do
   end
 
   def check_non_neg_int(_value), do: {:error, "must be a non-negative integer"}
+
+  @doc ~S"""
+  Exponential backoff with jitter. The delay is calculated as `(2^attempt) * 500 + random(1, 1000)`, capped at 64 seconds.
+
+  ## Examples
+
+      iex> LawnBot.Utils.exp_backoff(1)
+      1000..2000
+
+      iex> LawnBot.Utils.exp_backoff(2)
+      2000..3000
+
+      iex> LawnBot.Utils.exp_backoff(3)
+      4000..5000
+
+      iex> LawnBot.Utils.exp_backoff(4)
+      8000..9000
+
+      iex> LawnBot.Utils.exp_backoff(5)
+      16000..17000
+
+      iex> LawnBot.Utils.exp_backoff(6)
+      32000..33000
+
+      iex> LawnBot.Utils.exp_backoff(7)
+      64000
+
+      iex> LawnBot.Utils.exp_backoff(8)
+      64000
+  """
+  @spec exp_backoff(pos_integer()) :: pos_integer()
+  def exp_backoff(attempt) when is_integer(attempt) and attempt > 0 do
+    base_delay_ms = (1 <<< attempt) * 500
+    jitter_ms = :rand.uniform(1000)
+    min(base_delay_ms + jitter_ms, @max_backoff_ms)
+  end
+
+  def exp_backoff(_), do: @max_backoff_ms
 end

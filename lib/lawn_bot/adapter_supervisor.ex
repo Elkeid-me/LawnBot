@@ -1,8 +1,20 @@
 defmodule LawnBot.AdapterSupervisor do
   @moduledoc """
-  管理所有平台适配器的动态监督器。
+  The `DynamicSupervisor` that manages all the adapter processes.
 
-  平台通过 `:gateways` 配置中的键映射到适配器模块；目前支持 `:qq`。
+  It is responsible for checking wether the platform is supported, starting adapter processes, and
+  ensuring that they are supervised properly.
+
+  If you want to add a new adapter, you need to add it to the `@adapter_mapping` in this module. For
+  example:
+
+  ```elixir
+  @adapter_mapping %{
+    qq: LawnBot.Adapters.QQ,
+    lark: LawnBot.Adapters.Lark,
+    feishu: LawnBot.Adapters.Feishu
+  }
+  ```
   """
 
   use DynamicSupervisor
@@ -15,14 +27,20 @@ defmodule LawnBot.AdapterSupervisor do
     feishu: LawnBot.Adapters.Feishu
   }
 
-  def start_link(init_arg) do
+  @spec start_link(term()) :: Supervisor.on_start()
+  def start_link(args) do
     Logger.info("Starting AdapterSupervisor")
-    DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
+    DynamicSupervisor.start_link(__MODULE__, args, name: __MODULE__)
   end
 
   @impl DynamicSupervisor
-  def init(_init_arg), do: DynamicSupervisor.init(strategy: :one_for_one)
+  @spec init(term()) :: {:ok, DynamicSupervisor.sup_flags()} | :ignore
+  def init(_args), do: DynamicSupervisor.init(strategy: :one_for_one)
 
+  @doc """
+  Starts an adapter process for the given platform with the given options. If the platform is not
+  supported or the options are invalid, it will return an error.
+  """
   @spec start_adapter(:qq | :lark | :feishu, keyword()) ::
           DynamicSupervisor.on_start_child() | {:error, :validation_failed | :not_implemented}
   def start_adapter(platform, options) do
@@ -40,6 +58,10 @@ defmodule LawnBot.AdapterSupervisor do
     end
   end
 
+  # Check wether the given adapter platform is supported and options are valid.
+  #
+  # Returns the child specification for the given adapter platform and options,
+  # or an error if the platform is not supported or the options are invalid.
   @spec adapter_child_spec(:qq | :lark | :feishu, keyword()) ::
           {:ok, {module(), keyword()}}
           | {:error, NimbleOptions.ValidationError.t() | :not_implemented}

@@ -1,17 +1,9 @@
 defmodule LawnBot.Adapters.QQ.Shard do
   @moduledoc """
-  单个 QQ 网关分片的 WebSocket 连接进程。
+  A `WebSockex` process that manages a single shard of the QQ bot connection.
 
-  每个分片独立完成 QQ 网关协议循环：
-
-  - 连接成功后等待 OpCode 10 Hello，拿到心跳周期；
-  - 按 `session_start_limit.max_concurrency` 错峰发送 OpCode 2 Identify，
-    首次连接获得 session_id，断线重连时改发 OpCode 6 Resume 补发事件；
-  - 按 Hello 给出的周期发送 OpCode 1 心跳，携带最近一次收到的 `s`，
-    若上一次心跳没有收到 OpCode 11 ACK 则主动重连；
-
-  进程由 `LawnBot.Adapters.QQ`（DynamicSupervisor）监督，连接本身使用
-  WebSockex 的 `handle_initial_conn_failure` + 指数退避自行重连。
+  It handles the WebSocket connection, authentication, heartbeat, and event dispatching for a
+  specific shard.
   """
 
   use WebSockex
@@ -43,8 +35,6 @@ defmodule LawnBot.Adapters.QQ.Shard do
           seq: non_neg_integer() | nil,
           awaiting_ack?: boolean()
         }
-
-  @max_backoff 64_000
 
   @spec start_link(t()) :: {:ok, pid()} | {:error, term()}
   def start_link(state) do
@@ -126,7 +116,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   @impl WebSockex
   def handle_disconnect(status, state) do
-    delay = backoff(status.attempt_number)
+    delay = LawnBot.Utils.exp_backoff(status.attempt_number)
     Logger.warning("#{shard_name(state)} disconnected, reconnecting in #{delay}ms")
     Process.sleep(delay)
     {:reconnect, state}
@@ -233,7 +223,6 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp heartbeat_frame(state), do: {:text, JSON.encode!(%{"op" => 1, "d" => state.seq})}
-  defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
 
   @spec shard_name(t()) :: String.t()
   defp shard_name(%__MODULE__{shard_id: shard_id, name: name}) do
@@ -241,7 +230,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
     "#{QQ.bot_name(name)} shard #{shard_id + 1}/#{shards}"
   end
 
-  # Construct OpCode 2 "Identify" payload, using access_token and shard_id.
+  # Construct OpCode 2 "Identify" payload, using `access_token` and `shard_id`.
   @spec identify_payload(String.t(), atom(), non_neg_integer()) :: map()
   defp identify_payload(access_token, name, shard_id) do
     shards = PersistentTerm.get({name, :shards})
@@ -261,7 +250,8 @@ defmodule LawnBot.Adapters.QQ.Shard do
     }
   end
 
-  # Construct OpCode 6 "Resume" payload, using session_id and seq to recover missed events during disconnection.
+  # Construct OpCode 6 "Resume" payload, using `session_id` and `seq` to recover missed events
+  # during disconnection.
   @spec resume_payload(String.t(), String.t(), non_neg_integer() | nil) :: map()
   defp resume_payload(access_token, session_id, seq) do
     %{
