@@ -1,24 +1,20 @@
 defmodule LawnBot.Application do
-  @moduledoc """
-  LawnBot 的 OTP 应用入口。
-
-  应用启动 Registry 与平台适配器监督器，并根据 `:gateways` 配置启动各个平台的适配器。
-  未配置任何网关时，应用会返回 `{:error, :no_gateways_configured}`。
-  """
-
+  @moduledoc false
   use Application
 
   require Logger
 
-  @impl true
+  @impl Application
   def start(_type, _args) do
     children = [
       {Registry, name: LawnBot.AdapterRegistry, keys: :unique},
-      LawnBot.AdapterSupervisor,
-      {Finch, name: LawnBot.Finch}
+      {Finch, name: LawnBot.Finch},
+      LawnBot.AdapterSupervisor
     ]
 
-    with gateways when is_map(gateways) and map_size(gateways) > 0 <-
+    LawnBot.TokenStore.new()
+
+    with gateways when is_list(gateways) and gateways != [] <-
            Application.get_env(:lawn_bot, :gateways),
          {:ok, pid} <-
            Supervisor.start_link(children, strategy: :one_for_one, name: LawnBot.Supervisor) do
@@ -35,77 +31,59 @@ defmodule LawnBot.Application do
     end
   end
 
-  defp start_adapters({platform, configs}) when is_list(configs),
-    do: Enum.each(configs, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
+  defp start_adapters({platform, configs})
+       when is_atom(platform) and is_list(configs) and configs != [],
+       do: Enum.each(configs, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
+
+  defp start_adapters(_), do: :ok
 end
 
-defmodule LawnBot.Event do
-  @moduledoc "LawnBot 事件结构体。"
-  defstruct [
-    :session_type,
-    :session_id,
-    :message_type,
-    :message_id,
-    :author_id,
-    :content
-  ]
-
-  @type t :: %__MODULE__{
-          session_type: :group | :c2c,
-          session_id: String.t(),
-          message_type: :normal | :new_friend | :delete_friend | nil,
-          message_id: String.t(),
-          author_id: String.t(),
-          content: LawnBot.Event.Content.t()
-        }
-end
-
-defmodule LawnBot.Event.Attachment do
-  @moduledoc "LawnBot 事件附件结构体。"
+defmodule LawnBot.Attachment do
+  @moduledoc false
   defstruct [:filename, :mime_type, :size, :width, :height, :url]
 
-  @type t ::
-          %__MODULE__{
-            filename: String.t(),
-            mime_type: String.t(),
-            size: non_neg_integer(),
-            width: nil,
-            height: nil,
-            url: String.t()
-          }
-          | %__MODULE__{
-              filename: String.t(),
-              mime_type: String.t(),
-              size: non_neg_integer(),
-              width: non_neg_integer(),
-              height: non_neg_integer(),
-              url: String.t()
-            }
-end
+  @type image_attachment :: %__MODULE__{
+          filename: String.t(),
+          mime_type: String.t(),
+          size: non_neg_integer(),
+          width: non_neg_integer(),
+          height: non_neg_integer(),
+          url: String.t()
+        }
 
-defmodule LawnBot.Event.History do
-  @moduledoc false
-  @type t :: [LawnBot.Event.Content.t()]
+  @type file_attachment :: %__MODULE__{
+          filename: String.t(),
+          mime_type: String.t(),
+          size: non_neg_integer(),
+          width: nil,
+          height: nil,
+          url: String.t()
+        }
+
+  @type t :: image_attachment() | file_attachment()
 end
 
 defmodule LawnBot.Event.Content do
   @moduledoc false
+  alias LawnBot.Attachment
+  alias LawnBot.Event.Content
+
   defstruct [:text, :attachments, :references]
 
-  @type t ::
-          %__MODULE__{
-            text: String.t(),
-            attachments: [LawnBot.Event.Attachment.t()] | nil,
-            references: [LawnBot.Event.Content.t()] | nil
-          }
-          | LawnBot.Event.History.t()
-          | String.t()
-          | nil
+  @type multi_media_content :: %__MODULE__{
+          text: String.t(),
+          attachments: [Attachment.t()] | nil,
+          references: [Content.t()] | nil
+        }
+
+  @type history_content :: [Content.t()]
+
+  @type t :: multi_media_content() | history_content() | String.t() | nil
 end
 
-defmodule LawnBot.Reply do
-  @moduledoc "LawnBot 回复结构体。"
-  alias LawnBot.Event.Attachment
+defmodule LawnBot.Response do
+  @moduledoc false
+  alias LawnBot.Attachment
 
   defstruct [
     :action,
@@ -117,47 +95,41 @@ defmodule LawnBot.Reply do
     :reference_message_id
   ]
 
-  @typep attachment_type ::
-           Attachment.t()
-           | {:path, String.t()}
-           | {:url, String.t()}
-           | {:binary, binary()}
+  @type attachment_type ::
+          Attachment.t()
+          | {:path, String.t()}
+          | {:url, String.t()}
+          | {:binary, binary()}
 
-  @type t ::
-          %__MODULE__{
-            action: :ignore,
-            session_id: nil,
-            reply_message_id: nil,
-            session_type: nil,
-            text: nil,
-            attachment: nil,
-            reference_message_id: nil
-          }
-          | %__MODULE__{
-              action: :new_message,
-              session_id: String.t(),
-              reply_message_id: nil,
-              session_type: :group | :c2c,
-              text: String.t() | nil,
-              attachment: attachment_type() | nil,
-              reference_message_id: String.t() | nil
-            }
-          | %__MODULE__{
-              action: :reply,
-              session_id: String.t(),
-              reply_message_id: String.t(),
-              session_type: :group | :c2c,
-              text: String.t() | nil,
-              attachment: attachment_type() | nil,
-              reference_message_id: String.t() | nil
-            }
-end
+  @type ignore :: %__MODULE__{
+          action: :ignore,
+          session_id: nil,
+          reply_message_id: nil,
+          session_type: nil,
+          text: nil,
+          attachment: nil,
+          reference_message_id: nil
+        }
 
-defmodule LawnBot.Handler do
-  @moduledoc """
-  LawnBot 事件处理器行为定义。
+  @type new_message :: %__MODULE__{
+          action: :new_message,
+          session_id: String.t(),
+          reply_message_id: nil,
+          session_type: :group | :c2c,
+          text: String.t() | nil,
+          attachment: attachment_type() | nil,
+          reference_message_id: String.t() | nil
+        }
 
-  事件处理器负责接收 LawnBot 事件并返回相应的回复。
-  """
-  @callback handle_event(event :: LawnBot.Event.t()) :: LawnBot.Reply.t()
+  @type reply :: %__MODULE__{
+          action: :reply,
+          session_id: String.t(),
+          reply_message_id: String.t(),
+          session_type: :group | :c2c,
+          text: String.t() | nil,
+          attachment: attachment_type() | nil,
+          reference_message_id: String.t() | nil
+        }
+
+  @type t :: ignore() | new_message() | reply()
 end
