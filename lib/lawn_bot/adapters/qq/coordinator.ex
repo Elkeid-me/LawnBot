@@ -52,7 +52,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         {:noreply, schedule_token_refresh(state, auth.expires_in)}
 
       {:error, error} ->
-        log_failure("Failed to refresh token for", error, name)
+        log_failure("Failed to refresh token for", name, error)
         timer = Process.send_after(self(), :refresh_token, @token_refresh_retry)
         {:noreply, %{state | refresh_ref: timer}}
     end
@@ -66,7 +66,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @spec fetch_auth(state()) ::
           {:ok, %{access_token: String.t(), expires_in: pos_integer()}}
           | {:error, {:invalid_field_type, String.t()}}
-          | Utils.api_error()
+          | Utils.api_call_error()
   defp fetch_auth(state) do
     app_id = PersistentTerm.get({state.name, :app_id})
     client_secret = PersistentTerm.get({state.name, :client_secret})
@@ -88,7 +88,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         end
 
       error ->
-        Utils.check_api_error(error)
+        Utils.check_api_call_error(error)
     end
   end
 
@@ -96,7 +96,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @spec fetch_gateway(String.t(), state()) ::
           {:ok, %{url: String.t(), max_concurrency: pos_integer()}}
           | {:error, {:invalid_field_type, String.t()}}
-          | Utils.api_error()
+          | Utils.api_call_error()
   defp fetch_gateway(access_token, state) do
     headers = %{"authorization" => access_token}
 
@@ -128,7 +128,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         end
 
       error ->
-        Utils.check_api_error(error)
+        Utils.check_api_call_error(error)
     end
   end
 
@@ -147,7 +147,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       {:noreply, state, :hibernate}
     else
       {:error, error} ->
-        log_failure("Failed to bootstrap", error, name)
+        log_failure("Failed to bootstrap", name, error)
         Process.send_after(self(), :bootstrap, @bootstrap_retry)
         {:noreply, state}
     end
@@ -205,11 +205,11 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
   end
 
-  @spec log_failure(String.t(), term(), atom()) :: :ok
-  defp log_failure(prefix, error, name) do
+  @spec log_failure(String.t(), atom(), term()) :: :ok
+  defp log_failure(prefix, name, error) do
     case error do
-      {:qq_api, http_status, api_err_code} ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: HTTP #{http_status}, #{api_err_code}")
+      {:qq_api, http_status, code, message} ->
+        Logger.error("#{prefix} #{QQ.bot_name(name)}: HTTP #{http_status}, #{code}, #{message}")
 
       {:unexpected_response, http_status, response} ->
         Logger.error("#{prefix} #{QQ.bot_name(name)}: HTTP #{http_status}, #{inspect(response)}")
