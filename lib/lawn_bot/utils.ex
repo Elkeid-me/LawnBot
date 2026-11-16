@@ -123,7 +123,7 @@ defmodule LawnBot.Utils do
       64000
   """
   @spec exp_backoff(pos_integer()) :: pos_integer()
-  def exp_backoff(attempt) when is_integer(attempt) and attempt > 0 do
+  def exp_backoff(attempt) when is_integer(attempt) and attempt > 0 and attempt <= 7 do
     base_delay_ms = (1 <<< attempt) * 500
     jitter_ms = :rand.uniform(1000)
     min(base_delay_ms + jitter_ms, @max_backoff_ms)

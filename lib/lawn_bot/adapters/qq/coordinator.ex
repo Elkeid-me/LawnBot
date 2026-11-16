@@ -12,14 +12,16 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   require Logger
 
-  @bootstrap_retry 5_000
-  @token_refresh_retry 60_000
   @token_refresh_margin 30
 
   @token_url "https://api.bot.qq.com/app/getAppAccessToken"
   @gateway_url "https://api.bot.qq.com/gateway/bot"
 
-  @type state() :: %{name: atom(), refresh_ref: reference() | nil}
+  @type state() :: %{
+          name: atom(),
+          attempt_number: non_neg_integer(),
+          refresh_ref: reference() | nil
+        }
 
   @spec start_link(atom()) :: {:ok, pid()} | {:error, term()}
   def start_link(name), do: GenServer.start_link(__MODULE__, name, name: via_tuple(name))
@@ -27,7 +29,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @impl GenServer
   @spec init(atom()) :: {:ok, state(), {:continue, :bootstrap}}
   def init(name) do
-    state = %{name: name, refresh_ref: nil}
+    state = %{name: name, attempt_number: 0, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
   end
 
@@ -35,7 +37,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   @spec via_tuple(module()) :: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, module()}}}
   def via_tuple(name), do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, name}}}
 
-  @doc "异步启动 Coordinator 进程，避免阻塞 QQ 适配器监督树的启动。"
+  @doc "Launch coordinator asynchronously."
   @impl GenServer
   @spec handle_continue(:bootstrap, state()) :: {:noreply, state()}
   def handle_continue(:bootstrap, state), do: bootstrap(state)
@@ -49,20 +51,23 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       {:ok, auth} ->
         Logger.info("Refreshed token for #{QQ.bot_name(name)}")
         TokenStore.put(name, auth.access_token)
+        state = state |> schedule_token_refresh(auth.expires_in) |> Map.put(:attempt_number, 0)
         {:noreply, schedule_token_refresh(state, auth.expires_in)}
 
       {:error, error} ->
         log_failure("Failed to refresh token for", name, error)
-        timer = Process.send_after(self(), :refresh_token, @token_refresh_retry)
+        state = %{state | attempt_number: state.attempt_number + 1}
+        delay = LawnBot.Utils.exp_backoff(state.attempt_number)
+        timer = Process.send_after(self(), :refresh_token, delay)
         {:noreply, %{state | refresh_ref: timer}}
     end
   end
 
-  # 重试启动
+  # Retry bootstrap on failure.
   def handle_info(:bootstrap, state), do: bootstrap(state)
   def handle_info(_message, state), do: {:noreply, state}
 
-  # 获取机器人 `access_token` 与刷新时间.
+  # Fetch the bot's access token and refresh time from the QQ API.
   @spec fetch_auth(state()) ::
           {:ok, %{access_token: String.t(), expires_in: pos_integer()}}
           | {:error, {:invalid_field_type, String.t()}}
@@ -92,7 +97,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
-  # 获取网关地址与建议分片数。
+  # Fetch the gateway URL and recommended shard count.
   @spec fetch_gateway(String.t(), state()) ::
           {:ok, %{url: String.t(), max_concurrency: pos_integer()}}
           | {:error, {:invalid_field_type, String.t()}}
@@ -142,19 +147,21 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       TokenStore.put(name, auth.access_token)
       PersistentTerm.put({name, :gateway_url}, url)
       PersistentTerm.put({name, :max_concurrency}, max_concurrency)
-      state = schedule_token_refresh(state, auth.expires_in)
-      start_shards(state)
+      state = state |> schedule_token_refresh(auth.expires_in) |> Map.put(:attempt_number, 0)
+      start_shards(name)
       {:noreply, state, :hibernate}
     else
       {:error, error} ->
         log_failure("Failed to bootstrap", name, error)
-        Process.send_after(self(), :bootstrap, @bootstrap_retry)
+        state = %{state | attempt_number: state.attempt_number + 1}
+        delay = LawnBot.Utils.exp_backoff(state.attempt_number)
+        Process.send_after(self(), :bootstrap, delay)
         {:noreply, state}
     end
   end
 
-  @spec start_shards(state()) :: :ok
-  defp start_shards(%{name: name}) do
+  @spec start_shards(atom()) :: :ok
+  defp start_shards(name) do
     shards = PersistentTerm.get({name, :shards})
 
     started =
@@ -197,10 +204,6 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
           %{state | refresh_ref: nil}
       end
 
-    # `expires_in` 是 token 的剩余有效期（有效期内重复获取返回同一个 token），
-    # 不是固定 7200 秒。刷新点取「剩余 30 秒」：若贴着 60 秒窗口边界刷新，
-    # 稍有偏差就会拿回旧 token（expires_in≈60），再被下面的 1 秒下限立即重试，
-    # 表现就是两次刷新相隔约 1 秒。
     delay = max((expires_in - @token_refresh_margin) * 1_000, 1_000)
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
   end
@@ -222,7 +225,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
-  # 构造机器人 token。形如 `QQBot <access_token>`。
+  # Generate the authorization token for API requests. It looks like "QQBot <access_token>".
   @spec token(String.t()) :: String.t()
   defp token(access_token), do: "QQBot #{access_token}"
 end
