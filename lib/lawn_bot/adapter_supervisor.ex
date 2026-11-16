@@ -43,7 +43,7 @@ defmodule LawnBot.AdapterSupervisor do
   """
   @spec start_adapter(:qq | :lark | :feishu, keyword()) ::
           DynamicSupervisor.on_start_child() | {:error, :validation_failed | :not_implemented}
-  def start_adapter(platform, options) do
+  def start_adapter(platform, options) when is_atom(platform) and is_list(options) do
     case adapter_child_spec(platform, options) do
       {:ok, spec} ->
         DynamicSupervisor.start_child(__MODULE__, spec)
@@ -56,6 +56,11 @@ defmodule LawnBot.AdapterSupervisor do
         Logger.error("Cannot find adapter for platform: #{platform}.")
         {:error, :not_implemented}
     end
+  end
+
+  def start_adapter(_platform, _options) do
+    Logger.error("Invalid configs: Platform must be an atom and options must be a keyword list.")
+    {:error, :validation_failed}
   end
 
   # Check wether the given adapter platform is supported and options are valid.

@@ -11,7 +11,6 @@ defmodule LawnBot.Adapters.QQ do
   alias LawnBot.Adapters.QQ.Coordinator
 
   require Logger
-  require NimbleOptions
 
   @type handler :: {:fun, (LawnBot.Event.t() -> LawnBot.Response.t())} | {:module, module()}
 
@@ -80,8 +79,7 @@ defmodule LawnBot.Adapters.QQ do
                       type: :atom,
                       required: false,
                       default: LawnBot.ExampleHandler,
-                      doc:
-                        "Event handler, can be a function or a module implementing `LawnBot.Handler`"
+                      doc: "Event handler, a module implementing `LawnBot.Handler`"
                     ],
                     os: [
                       type: :string,
@@ -121,7 +119,13 @@ defmodule LawnBot.Adapters.QQ do
   @impl LawnBot.Adapter
   @spec validate_options(options()) ::
           {:ok, options()} | {:error, NimbleOptions.ValidationError.t()}
-  def validate_options(opts), do: NimbleOptions.validate(opts, @options_schema)
+  def validate_options(opts) do
+    if Keyword.keyword?(opts) do
+      NimbleOptions.validate(opts, @options_schema)
+    else
+      {:error, %NimbleOptions.ValidationError{message: "Expected a keyword list"}}
+    end
+  end
 
   @spec start_link(options()) :: Supervisor.on_start()
   def start_link(opts) do

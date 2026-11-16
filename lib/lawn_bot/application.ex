@@ -31,9 +31,9 @@ defmodule LawnBot.Application do
     end
   end
 
-  defp start_adapters({platform, configs})
-       when is_atom(platform) and is_list(configs) and configs != [],
-       do: Enum.each(configs, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
+  defp start_adapters({platform, adapters})
+       when is_atom(platform) and is_list(adapters) and adapters != [],
+       do: Enum.each(adapters, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
 
   defp start_adapters(_), do: :ok
 end
