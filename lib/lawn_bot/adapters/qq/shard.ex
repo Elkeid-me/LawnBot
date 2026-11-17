@@ -239,7 +239,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
       "op" => 2,
       "d" => %{
         "token" => access_token,
-        "intents" => PersistentTerm.get({name, :intents}),
+        "intents" => PersistentTerm.get({name, :permissions}),
         "shard" => [shard_id, shards],
         "properties" => %{
           "$os" => PersistentTerm.get({name, :os}),

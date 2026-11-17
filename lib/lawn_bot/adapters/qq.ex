@@ -14,7 +14,7 @@ defmodule LawnBot.Adapters.QQ do
 
   @type handler :: {:fun, (LawnBot.Event.t() -> LawnBot.Response.t())} | {:module, module()}
 
-  @type valid_intent ::
+  @type valid_permissions ::
           :guilds
           | :guild_members
           | :guild_messages
@@ -35,11 +35,11 @@ defmodule LawnBot.Adapters.QQ do
           os: String.t(),
           browser: String.t(),
           device: String.t(),
-          intents: [valid_intent()],
+          permissions: [valid_permissions()],
           shards: pos_integer()
         ]
 
-  @intents %{
+  @permissions %{
     guilds: 1,
     guild_members: 2,
     guild_messages: 512,
@@ -53,7 +53,7 @@ defmodule LawnBot.Adapters.QQ do
     public_guild_messages: 1_073_741_824
   }
 
-  @default_intents [:guilds, :guild_members, :public_guild_messages]
+  @default_permissions [:guilds, :guild_members, :public_guild_messages]
 
   @options_schema NimbleOptions.new!(
                     app_id: [
@@ -99,12 +99,12 @@ defmodule LawnBot.Adapters.QQ do
                       default: "LawnBot",
                       doc: "`$device` field during authentication"
                     ],
-                    intents: [
-                      type: {:list, {:in, Map.keys(@intents)}},
-                      type_doc: "`t:valid_intent/0`",
+                    permissions: [
+                      type: {:list, {:in, Map.keys(@permissions)}},
+                      type_doc: "`t:valid_permissions/0`",
                       required: false,
-                      default: @default_intents,
-                      doc: "List of event intents to subscribe to"
+                      default: @default_permissions,
+                      doc: "List of event permissions to subscribe to"
                     ],
                     shards: [
                       type: :pos_integer,
@@ -176,12 +176,12 @@ defmodule LawnBot.Adapters.QQ do
       PersistentTerm.put({name, key}, Keyword.fetch!(opts, key))
     end)
 
-    intents =
+    permissions =
       opts
-      |> Keyword.fetch!(:intents)
-      |> Enum.reduce(0, fn intent, acc -> acc + Map.get(@intents, intent) end)
+      |> Keyword.fetch!(:permissions)
+      |> Enum.reduce(0, fn permission, acc -> acc + Map.get(@permissions, permission) end)
 
-    PersistentTerm.put({name, :intents}, intents)
+    PersistentTerm.put({name, :permissions}, permissions)
   end
 
   @spec start_children(options(), atom()) ::
