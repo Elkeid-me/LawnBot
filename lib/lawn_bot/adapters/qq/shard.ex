@@ -1,32 +1,22 @@
 defmodule LawnBot.Adapters.QQ.Shard do
   @moduledoc """
-  单个 QQ 网关分片的 WebSocket 连接进程。
+  A `WebSockex` process that manages a single shard of the QQ bot connection.
 
-  每个分片独立完成 QQ 网关协议循环：
-
-  - 连接成功后等待 OpCode 10 Hello，拿到心跳周期；
-  - 按 `session_start_limit.max_concurrency` 错峰发送 OpCode 2 Identify，
-    首次连接获得 session_id，断线重连时改发 OpCode 6 Resume 补发事件；
-  - 按 Hello 给出的周期发送 OpCode 1 心跳，携带最近一次收到的 `s`，
-    若上一次心跳没有收到 OpCode 11 ACK 则主动重连；
-
-  进程由 `LawnBot.Adapters.QQ`（DynamicSupervisor）监督，连接本身使用
-  WebSockex 的 `handle_initial_conn_failure` + 指数退避自行重连。
+  It handles the WebSocket connection, authentication, heartbeat, and event dispatching for a
+  specific shard.
   """
 
   use WebSockex
 
-  alias :ets, as: ETS
   alias :persistent_term, as: PersistentTerm
-  alias LawnBot.Adapters.QQ
-  alias LawnBot.Adapters.QQ.TokenStore
+  alias LawnBot.Adapters.QQ.Utils
+  alias LawnBot.TokenStore
 
   require Logger
 
   defstruct [
     :name,
-    :shard,
-    :token_table_tid,
+    :shard_id,
     session_id: nil,
     heartbeat_interval: nil,
     heartbeat_ref: nil,
@@ -35,17 +25,9 @@ defmodule LawnBot.Adapters.QQ.Shard do
     awaiting_ack?: false
   ]
 
-  @typedoc """
-  分片参数，形如 `[shard_id, total_shards]`，用于 Identify 时启用水平分片。
-
-  其中 `0 <= shard_id < total_shards`。
-  """
-  @type shard() :: [non_neg_integer()]
-
   @type t() :: %__MODULE__{
           name: atom(),
-          shard: shard(),
-          token_table_tid: ETS.tid(),
+          shard_id: non_neg_integer(),
           session_id: String.t() | nil,
           heartbeat_interval: pos_integer() | nil,
           heartbeat_ref: reference() | nil,
@@ -54,15 +36,12 @@ defmodule LawnBot.Adapters.QQ.Shard do
           awaiting_ack?: boolean()
         }
 
-  @default_heartbeat_interval 45_000
-  @max_backoff 60_000
-
   @spec start_link(t()) :: {:ok, pid()} | {:error, term()}
   def start_link(state) do
     opts = [
       async: true,
       handle_initial_conn_failure: true,
-      name: via_tuple(state.name, shard_id(state))
+      name: via_tuple(state.name, state.shard_id)
     ]
 
     gateway_url = PersistentTerm.get({state.name, :gateway_url})
@@ -71,22 +50,23 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   def child_spec(state) do
     %{
-      id: {__MODULE__, shard_id(state)},
+      id: {__MODULE__, state.shard_id},
       start: {__MODULE__, :start_link, [state]}
     }
   end
 
-  @impl true
+  @impl WebSockex
   def handle_connect(_conn, state) do
-    # 重连后先清掉上一条连接的心跳定时器，等 Hello 再重新调度。
-    {:ok,
-     state
-     |> cancel_timer(:heartbeat_ref)
-     |> cancel_timer(:auth_ref)
-     |> Map.put(:awaiting_ack?, false)}
+    state =
+      state
+      |> cancel_timer(:heartbeat_ref)
+      |> cancel_timer(:auth_ref)
+      |> Map.put(:awaiting_ack?, false)
+
+    {:ok, state}
   end
 
-  @impl true
+  @impl WebSockex
   @spec handle_frame(WebSockex.frame(), t()) :: {:ok, t()} | {:reply, {:text, String.t()}, t()}
   def handle_frame({:text, text}, state) do
     case JSON.decode(text) do
@@ -105,13 +85,13 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   def handle_frame(_frame, state), do: {:ok, state}
 
-  @impl true
+  @impl WebSockex
   def handle_info(:authenticate, state) do
-    access_token = TokenStore.get(state.token_table_tid)
+    access_token = TokenStore.get(state.name)
 
     {action, payload} =
       case state.session_id do
-        nil -> {"identifying", identify_payload(access_token, state.name, state.shard)}
+        nil -> {"identifying", identify_payload(access_token, state.name, state.shard_id)}
         session_id -> {"resuming", resume_payload(access_token, session_id, state.seq)}
       end
 
@@ -131,12 +111,12 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   def handle_info(_message, state), do: {:ok, state}
 
-  @impl true
+  @impl WebSockex
   def handle_cast(_message, state), do: {:ok, state}
 
-  @impl true
+  @impl WebSockex
   def handle_disconnect(status, state) do
-    delay = backoff(status.attempt_number || 1)
+    delay = LawnBot.Utils.exp_backoff(status.attempt_number)
     Logger.warning("#{shard_name(state)} disconnected, reconnecting in #{delay}ms")
     Process.sleep(delay)
     {:reconnect, state}
@@ -187,7 +167,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp handle_payload(%{"op" => 10, "d" => %{"heartbeat_interval" => interval}}, state) do
     state = %{state | heartbeat_interval: interval, awaiting_ack?: false}
     Logger.info("Hello on #{shard_name(state)}, heartbeat interval #{interval}ms")
-    {:ok, schedule_authenticate(state, authenticate_delay(state))}
+    {:ok, schedule_authenticate(state)}
   end
 
   # 心跳 ACK。
@@ -215,22 +195,20 @@ defmodule LawnBot.Adapters.QQ.Shard do
   defp update_seq(payload, state) when is_map(payload),
     do: update_seq(Map.fetch!(payload, "s"), state)
 
-  # 各分片按索引错峰 Identify，避免同时鉴权触发限流。
-  defp authenticate_delay(state) do
-    shard_id = shard_id(state)
+  defp schedule_authenticate(state) do
     concurrency = PersistentTerm.get({state.name, :max_concurrency})
-    round(shard_id * 5_000 / concurrency)
-  end
-
-  defp schedule_authenticate(state, delay) do
-    state = cancel_timer(state, :auth_ref)
-    %{state | auth_ref: Process.send_after(self(), :authenticate, delay)}
+    delay = round(state.shard_id * 5_000 / concurrency) + :rand.uniform(1000)
+    start_timer(state, :auth_ref, :authenticate, delay)
   end
 
   defp schedule_heartbeat(state) do
-    state = cancel_timer(state, :heartbeat_ref)
-    interval = state.heartbeat_interval || @default_heartbeat_interval
-    %{state | heartbeat_ref: Process.send_after(self(), :heartbeat, interval)}
+    delay = state.heartbeat_interval
+    start_timer(state, :heartbeat_ref, :heartbeat, delay)
+  end
+
+  defp start_timer(state, key, message, delay) do
+    state = cancel_timer(state, key)
+    %{state | key => Process.send_after(self(), message, delay)}
   end
 
   defp cancel_timer(state, key) do
@@ -245,22 +223,24 @@ defmodule LawnBot.Adapters.QQ.Shard do
   end
 
   defp heartbeat_frame(state), do: {:text, JSON.encode!(%{"op" => 1, "d" => state.seq})}
-  defp backoff(attempt), do: min(round(:math.pow(2, attempt)) * 500, @max_backoff)
-  defp shard_id(%__MODULE__{shard: [shard_id, _]}), do: shard_id
 
   @spec shard_name(t()) :: String.t()
-  defp shard_name(%__MODULE__{shard: [shard_id, shards], name: name}),
-    do: "#{QQ.bot_name(name)} shard #{shard_id + 1}/#{shards}"
+  defp shard_name(%__MODULE__{shard_id: shard_id, name: name}) do
+    shards = PersistentTerm.get({name, :shards})
+    "#{Utils.bot_name(name)} shard #{shard_id + 1}/#{shards}"
+  end
 
-  # 构造 OpCode 2 Identify 载荷，携带分片参数以启用水平分片。
-  @spec identify_payload(String.t(), atom(), shard()) :: map()
-  defp identify_payload(access_token, name, shard) do
+  # Construct OpCode 2 "Identify" payload, using `access_token` and `shard_id`.
+  @spec identify_payload(String.t(), atom(), non_neg_integer()) :: map()
+  defp identify_payload(access_token, name, shard_id) do
+    shards = PersistentTerm.get({name, :shards})
+
     %{
       "op" => 2,
       "d" => %{
         "token" => access_token,
-        "intents" => PersistentTerm.get({name, :intents}),
-        "shard" => shard,
+        "intents" => PersistentTerm.get({name, :permissions}),
+        "shard" => [shard_id, shards],
         "properties" => %{
           "$os" => PersistentTerm.get({name, :os}),
           "$browser" => PersistentTerm.get({name, :browser}),
@@ -270,7 +250,8 @@ defmodule LawnBot.Adapters.QQ.Shard do
     }
   end
 
-  # 构造 OpCode 6 Resume 载荷，用 session_id 与 seq 补发断线期间遗漏的事件。
+  # Construct OpCode 6 "Resume" payload, using `session_id` and `seq` to recover missed events
+  # during disconnection.
   @spec resume_payload(String.t(), String.t(), non_neg_integer() | nil) :: map()
   defp resume_payload(access_token, session_id, seq) do
     %{
@@ -285,58 +266,122 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   defp handle_event(payload, state) do
     name = state.name
-    tid = state.token_table_tid
-    task_supervisor = QQ.task_supervisor_name(name)
+    task_supervisor = Utils.task_supervisor_via_tuple(name)
     handler = :persistent_term.get(name, nil)
 
     Task.Supervisor.start_child(task_supervisor, fn ->
-      payload |> QQ.to_event() |> handler.() |> handle_reply(tid, name)
+      payload |> LawnBot.Adapters.QQ.EventProcess.to_event() |> handler.() |> handle_response(name)
     end)
   end
 
-  @spec handle_reply(LawnBot.Reply.t(), ETS.tid(), module()) :: :ok
-  defp handle_reply(%LawnBot.Reply{action: action} = reply, tid, name)
+  @spec handle_response(LawnBot.Response.t(), module()) :: :ok
+  defp handle_response(%LawnBot.Response{action: action} = response, name)
        when action == :reply or action == :new_message do
-    send_message(reply, TokenStore.get(tid), name)
+    send_message(response, TokenStore.get(name), name)
   end
 
-  defp handle_reply(_reply, _tid, _name), do: :ok
+  defp handle_response(_response, _name), do: :ok
 
-  @spec send_message(LawnBot.Reply.t(), String.t(), module()) :: :ok
-  defp send_message(%LawnBot.Reply{action: action, event: event}, access_token, name) do
-    session_id = event.session_id
-
+  @spec send_message(LawnBot.Response.t(), String.t(), module()) :: :ok
+  defp send_message(response, access_token, name) do
     url =
-      case(event.session_type) do
-        :group -> "https://api.bot.qq.com/v2/groups/#{session_id}/messages"
-        :c2c -> "https://api.bot.qq.com/v2/users/#{session_id}/messages"
+      case(response.session_type) do
+        :group -> "https://api.bot.qq.com/v2/groups/#{response.session_id}/messages"
+        :c2c -> "https://api.bot.qq.com/v2/users/#{response.session_id}/messages"
       end
 
     message =
-      case action do
-        :reply -> event |> build_message_content() |> Map.put("msg_id", event.message_id)
-        :new_message -> build_message_content(event)
-        _ -> nil
+      case response.action do
+        :reply ->
+          response
+          |> build_message_content(access_token, name)
+          |> Map.put("msg_id", response.reply_message_id)
+
+        :new_message ->
+          build_message_content(response, access_token, name)
+
+        _ ->
+          nil
       end
 
     headers = %{"authorization" => access_token, "content-type" => "application/json"}
 
     Req.post(url,
-      body: JSON.encode_to_iodata!(message),
       headers: headers,
-      finch: [name: LawnBot.Finch, pool_tag: name],
-      decode_body: false
+      json: message,
+      finch: [name: LawnBot.Finch, pool_tag: name]
     )
 
     :ok
   end
 
   # 构造消息发送的 JSON 载荷
-  # todo
-  defp build_message_content(event) do
-    %{
-      "msg_type" => 0,
-      "content" => event.content
+  @spec build_message_content(LawnBot.Response.t(), String.t(), atom()) :: map()
+  defp build_message_content(response, access_token, name) do
+    media_info_task =
+      case response.attachment do
+        nil -> nil
+        _ -> Task.async(fn -> upload_attachment(response, access_token, name) end)
+      end
+
+    payload =
+      case response.text do
+        nil -> %{}
+        text -> %{"content" => text}
+      end
+
+    payload =
+      case response.reference_message_id do
+        nil -> payload
+        id -> Map.put(payload, "message_reference", %{"message_id" => id})
+      end
+
+    case media_info_task do
+      nil ->
+        Map.put(payload, "msg_type", 0)
+
+      task ->
+        payload
+        |> Map.put("msg_type", 7)
+        |> Map.put("media", %{"file_info" => Task.await(task, 30_000)})
+    end
+  end
+
+  @spec upload_attachment(LawnBot.Response.t(), String.t(), atom()) :: nil
+  defp upload_attachment(%LawnBot.Response{attachment: {:path, path}}, _access_token, _name)
+       when is_binary(path) do
+    nil
+  end
+
+  @spec upload_attachment(LawnBot.Response.t(), String.t(), atom()) :: nil
+  defp upload_attachment(%LawnBot.Response{attachment: {:url, url}} = response, access_token, name)
+       when is_binary(url) do
+    headers = %{"authorization" => access_token, "content-type" => "application/json"}
+
+    body = %{
+      "file_type" => 1,
+      "url" => url,
+      "srv_send_msg" => false
     }
+
+    url =
+      case response.session_type do
+        :group -> "https://api.bot.qq.com/v2/groups/#{response.session_id}/files"
+        :c2c -> "https://api.bot.qq.com/v2/users/#{response.session_id}/files"
+      end
+
+    case Req.post(url, headers: headers, json: body, finch: [name: LawnBot.Finch, pool_tag: name]) do
+      {:ok, %Req.Response{status: 200, body: %{"file_info" => file_info}}}
+      when is_binary(file_info) ->
+        file_info
+
+      {:ok, %Req.Response{status: 400, body: %{"message" => message}}} ->
+        Logger.warning("Failed to upload attachment: #{message}")
+        nil
+
+      {:error, reason} ->
+        Logger.warning("Failed to upload attachment: #{inspect(reason)}")
+        nil
+    end
   end
 end

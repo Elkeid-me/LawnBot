@@ -1,16 +1,10 @@
 defmodule LawnBot.Application do
-  @moduledoc """
-  LawnBot 的 OTP 应用入口。
-
-  应用启动 Registry 与平台适配器监督器，并根据 `:gateways` 配置启动各个平台的适配器。
-  未配置任何网关时，应用会返回 `{:error, :no_gateways_configured}`。
-  """
-
+  @moduledoc false
   use Application
 
   require Logger
 
-  @impl true
+  @impl Application
   def start(_type, _args) do
     children = [
       {Registry, name: LawnBot.AdapterRegistry, keys: :unique},
@@ -18,7 +12,9 @@ defmodule LawnBot.Application do
       LawnBot.AdapterSupervisor
     ]
 
-    with gateways when is_map(gateways) and map_size(gateways) > 0 <-
+    LawnBot.TokenStore.new()
+
+    with gateways when is_list(gateways) and gateways != [] <-
            Application.get_env(:lawn_bot, :gateways),
          {:ok, pid} <-
            Supervisor.start_link(children, strategy: :one_for_one, name: LawnBot.Supervisor) do
@@ -35,82 +31,9 @@ defmodule LawnBot.Application do
     end
   end
 
-  defp start_adapters({platform, configs}) when is_list(configs),
-    do: Enum.each(configs, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
-end
+  defp start_adapters({platform, adapters})
+       when is_atom(platform) and is_list(adapters) and adapters != [],
+       do: Enum.each(adapters, &LawnBot.AdapterSupervisor.start_adapter(platform, &1))
 
-defmodule LawnBot.Event do
-  @moduledoc "LawnBot 事件结构体。"
-  defstruct [
-    :session_type,
-    :session_id,
-    :message_type,
-    :message_id,
-    :author_id,
-    :content,
-    :extra
-  ]
-
-  @type t :: %__MODULE__{
-          session_type: :group | :c2c | nil,
-          session_id: String.t() | nil,
-          message_type: :normal | :new_friend | :delete_friend | nil,
-          message_id: String.t() | nil,
-          author_id: String.t(),
-          content: LawnBot.Event.Content.t(),
-          extra: map() | nil
-        }
-end
-
-defmodule LawnBot.Event.Attachment do
-  @moduledoc "LawnBot 事件附件结构体。"
-  defstruct [:filename, :mime_type, :size, :width, :height, :url]
-
-  @type t :: %__MODULE__{
-          filename: String.t(),
-          mime_type: String.t(),
-          size: non_neg_integer(),
-          width: non_neg_integer() | nil,
-          height: non_neg_integer() | nil,
-          url: String.t()
-        }
-end
-
-defmodule LawnBot.Event.History do
-  @moduledoc false
-  @type t :: [LawnBot.Event.Content.t()]
-end
-
-defmodule LawnBot.Event.Content do
-  @moduledoc false
-  defstruct [:text, :attachments, :references]
-
-  @type t ::
-          %__MODULE__{
-            text: String.t(),
-            attachments: [LawnBot.Event.Attachment.t()] | nil,
-            references: [LawnBot.Event.Content.t()] | nil
-          }
-          | LawnBot.Event.History.t()
-          | String.t()
-          | nil
-end
-
-defmodule LawnBot.Reply do
-  @moduledoc "LawnBot 回复结构体。"
-  defstruct [:action, :event]
-
-  @type t :: %__MODULE__{
-          action: :new_message | :reply | :ignore,
-          event: LawnBot.Event.t() | nil
-        }
-end
-
-defmodule LawnBot.Handler do
-  @moduledoc """
-  LawnBot 事件处理器行为定义。
-
-  事件处理器负责接收 LawnBot 事件并返回相应的回复。
-  """
-  @callback handle_event(event :: LawnBot.Event.t()) :: LawnBot.Reply.t()
+  defp start_adapters(_), do: :ok
 end

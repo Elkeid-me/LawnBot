@@ -1,4 +1,5 @@
-# LawnBot
+![LawnBot](https://github.com/Elkeid-me/LawnBot/raw/main/assets/readme_logo_light.png#gh-light-mode-only)
+![LawnBot](https://github.com/Elkeid-me/LawnBot/raw/main/assets/readme_logo_dark.png#gh-dark-mode-only)
 
 基于 Elixir 的聊天机器人框架。当前提供 QQ 官方机器人平台 的 WebSocket 接入。
 
@@ -23,7 +24,7 @@ config :lawn_bot,
         app_id: System.get_env("QQ_APP_ID", ""),
         client_secret: System.get_env("QQ_CLIENT_SECRET", ""),
         name: :LawnBot,
-        intents: [:guilds, :guild_members, :public_guild_messages],
+        permissions: [:guilds, :guild_members, :public_guild_messages],
         handler: {:module, LawnBot.ExampleHandler}
       }
     ]
@@ -33,7 +34,7 @@ config :lawn_bot,
 1. `:app_id`（必需）字符串。QQ 开放平台获取的 APP ID。建议设置为环境变量。
 2. `:client_secret`（必需）字符串。QQ 开放平台获取的 Client Secret。建议设置为环境变量。
 3. `:name`（必需）Bot 的名称，必须为 `atom()` 类型。不同 Bot 的名称不能相同。
-4. `:intents`（可选）`atom()` 列表。事件订阅，默认只订阅平台默认有权限的三类事件 `[:guilds, :guild_members, :public_guild_messages]`
+4. `:permissions`（可选）`atom()` 列表。事件订阅，默认只订阅平台默认有权限的三类事件 `[:guilds, :guild_members, :public_guild_messages]`
 5. `:shards`（可选）整数。覆盖 /gateway/bot 建议的分片数。
 6. `:os`、`:browser`、`:device`（可选）客户端信息。
    - `:os` 字符串，无实际意义。默认为 `:os.type() |> elem(1) |> to_string()`，在 Linux 下为 `linux`，Windows 下为 `"nt"`

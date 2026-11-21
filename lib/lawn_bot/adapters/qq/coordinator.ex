@@ -1,148 +1,139 @@
 defmodule LawnBot.Adapters.QQ.Coordinator do
   @moduledoc """
-  QQ 适配器的引导与维护进程。
-
-  职责：
-
-    * 获取 access_token，并在过期前定时刷新，结果写入 `TokenStore`；
-    * 调用 `GET /gateway/bot` 获取网关地址与建议分片数；
-    * 拿到 token 后在所属 DynamicSupervisor 下启动各分片连接进程。
-
-  token 存放在本适配器私有的 ETS 表中，分片与发送任务在用到时才读取，
-  因此刷新不需要广播，也不存在旧快照。
-
-  本进程是 `LawnBot.Adapters.QQ`（Supervisor）的最后一个子进程，
-  自身被监督树重启后会重新引导：已存在的分片会收到 `{:error, {:already_started, pid}}`
-  而被跳过，它们会在下次使用 token 时读到新值。
+  A GenServer that coordinates the lifecycle of a QQ bot, including authentication and gateway management.
   """
 
   use GenServer
 
-  alias :ets, as: ETS
   alias :persistent_term, as: PersistentTerm
   alias LawnBot.Adapters.QQ
-  alias LawnBot.Adapters.QQ.TokenStore
+  alias LawnBot.Adapters.QQ.Utils
+  alias LawnBot.TokenStore
 
   require Logger
 
-  @bootstrap_retry 5_000
-  @token_refresh_retry 60_000
-
-  # QQ 只在 token 剩余有效期不足 60 秒时才签发新 token；更早调用会原样返回旧 token，
-  # 并把 expires_in 改成它的剩余时间。因此刷新点必须落在这 60 秒窗口内部。
-  # 取中点 30 秒，给取整误差和网络延迟留出余量，同时保证旧 token 还有效，不会出现空窗。
   @token_refresh_margin 30
 
   @token_url "https://api.bot.qq.com/app/getAppAccessToken"
   @gateway_url "https://api.bot.qq.com/gateway/bot"
-  @plain_gateway_url "https://api.bot.qq.com/gateway"
 
   @type state() :: %{
           name: atom(),
-          token_table_tid: ETS.tid(),
+          attempt_number: non_neg_integer(),
           refresh_ref: reference() | nil
         }
 
-  @spec start_link({atom(), ETS.tid()}) :: {:ok, pid()} | {:error, term()}
-  def start_link({name, tid}),
-    do: GenServer.start_link(__MODULE__, {name, tid}, name: QQ.coordinator_name(name))
+  @spec start_link(atom()) :: {:ok, pid()} | {:error, term()}
+  def start_link(name), do: GenServer.start_link(__MODULE__, name, name: via_tuple(name))
 
-  @impl true
-  @spec init({atom(), ETS.tid()}) :: {:ok, state(), {:continue, :bootstrap}}
-  def init({name, tid}) do
-    state = %{name: name, token_table_tid: tid, refresh_ref: nil}
+  @impl GenServer
+  @spec init(atom()) :: {:ok, state(), {:continue, :bootstrap}}
+  def init(name) do
+    state = %{name: name, attempt_number: 0, refresh_ref: nil}
     {:ok, state, {:continue, :bootstrap}}
   end
 
-  @doc "异步启动 Coordinator 进程，避免阻塞 QQ 适配器监督树的启动。"
-  @impl true
-  @spec handle_continue(:bootstrap | :bootstrap, state()) :: {:noreply, state()}
+  @doc "Coordinator 进程在 Registry 中的名字。"
+  @spec via_tuple(module()) :: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, module()}}}
+  def via_tuple(name), do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, name}}}
+
+  @doc "Launch coordinator asynchronously."
+  @impl GenServer
+  @spec handle_continue(:bootstrap, state()) :: {:noreply, state()}
   def handle_continue(:bootstrap, state), do: bootstrap(state)
 
-  @impl true
+  @impl GenServer
   @spec handle_info(:refresh_token | term(), state()) :: {:noreply, state()}
   def handle_info(:refresh_token, state) do
     name = state.name
 
-    case fetch_access_token(name) do
-      {:ok, token} ->
-        Logger.info("Refreshed token for #{QQ.bot_name(name)}")
-        TokenStore.put(state.token_table_tid, token.access_token)
-        {:noreply, schedule_token_refresh(state, token.expires_in)}
+    case fetch_auth(state) do
+      {:ok, auth} ->
+        Logger.info("Refreshed token for #{Utils.bot_name(name)}")
+        TokenStore.put(name, auth.access_token)
+        state = state |> schedule_token_refresh(auth.expires_in) |> Map.put(:attempt_number, 0)
+        {:noreply, schedule_token_refresh(state, auth.expires_in)}
 
-      {:error, reason} ->
-        log_failure("Failed to refresh token for", reason, name)
-
-        {:noreply,
-         %{state | refresh_ref: Process.send_after(self(), :refresh_token, @token_refresh_retry)}}
+      {:error, error} ->
+        log_failure("Failed to refresh token for", name, error)
+        state = %{state | attempt_number: state.attempt_number + 1}
+        delay = LawnBot.Utils.exp_backoff(state.attempt_number)
+        timer = Process.send_after(self(), :refresh_token, delay)
+        {:noreply, %{state | refresh_ref: timer}}
     end
   end
 
-  # 重试启动
+  # Retry bootstrap on failure.
   def handle_info(:bootstrap, state), do: bootstrap(state)
   def handle_info(_message, state), do: {:noreply, state}
 
-  # 获取机器人 `access_token` 与 token 刷新时间。
-  @spec fetch_access_token(atom()) :: {:ok, QQ.token()} | {:error, term()}
-  defp fetch_access_token(name) do
-    app_id = PersistentTerm.get({name, :app_id})
-    client_secret = PersistentTerm.get({name, :client_secret})
+  # Fetch the bot's access token and refresh time from the QQ API.
+  @spec fetch_auth(state()) ::
+          {:ok, %{access_token: String.t(), expires_in: pos_integer()}}
+          | {:error, {:invalid_field_type, String.t()}}
+          | Utils.api_call_error()
+  defp fetch_auth(state) do
+    app_id = PersistentTerm.get({state.name, :app_id})
+    client_secret = PersistentTerm.get({state.name, :client_secret})
+    auth_body = %{"appId" => app_id, "clientSecret" => client_secret}
 
-    case Req.post(@token_url,
-           headers: %{"content-type" => "application/json"},
-           body: JSON.encode_to_iodata!(%{"appId" => app_id, "clientSecret" => client_secret}),
-           finch: [name: LawnBot.Finch, pool_tag: name],
-           decoders: [json: &JSON.decode/1]
-         ) do
-      {:ok, %Req.Response{body: %{"access_token" => access_token, "expires_in" => expires_in}}}
-      when is_binary(access_token) ->
-        case positive_int(expires_in) do
-          {:ok, expires_in} -> {:ok, %{access_token: token(access_token), expires_in: expires_in}}
-          :error -> {:error, {:invalid_expires_in, expires_in}}
+    case Req.post(@token_url, json: auth_body, finch: [name: LawnBot.Finch, pool_tag: state.name]) do
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{"access_token" => access_token, "expires_in" => expires_in}
+       }} ->
+        with {:ok, access_token} <- LawnBot.Utils.check_empty_string(access_token),
+             {:ok, expires_in} <- LawnBot.Utils.check_pos_int(expires_in) do
+          access_token = token(access_token)
+          {:ok, %{access_token: access_token, expires_in: expires_in}}
+        else
+          {:error, message} ->
+            {:error, {:invalid_field_type, message}}
         end
 
-      {:ok, %Req.Response{body: %{"code" => code, "message" => message}}} ->
-        {:error, {:qq_api, code, message}}
-
-      {:ok, response} ->
-        {:error, {:unexpected_response, response}}
-
-      {:error, exception} ->
-        {:error, exception}
+      error ->
+        Utils.check_api_call_error(error)
     end
   end
 
-  # 获取网关地址与建议分片数。
-  @spec fetch_gateway(String.t(), atom()) :: {:ok, map()} | {:error, term()}
-  defp fetch_gateway(access_token, name) do
-    headers = %{"authorization" => access_token, "content-type" => "application/json"}
+  # Fetch the gateway URL and recommended shard count.
+  @spec fetch_gateway(String.t(), state()) ::
+          {:ok, %{url: String.t(), max_concurrency: pos_integer()}}
+          | {:error, {:invalid_field_type, String.t()}}
+          | Utils.api_call_error()
+  defp fetch_gateway(access_token, state) do
+    headers = %{"authorization" => access_token}
 
-    case Req.get(@gateway_url,
-           headers: headers,
-           finch: [name: LawnBot.Finch, pool_tag: name],
-           decoders: [json: &JSON.decode/1]
-         ) do
-      {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
-        {:ok, parse_gateway(url, body, name)}
+    case Req.get(@gateway_url, headers: headers, finch: [name: LawnBot.Finch, pool_tag: state.name]) do
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "url" => url,
+           "session_start_limit" => %{
+             "max_concurrency" => max_concurrency,
+             "remaining" => remaining
+           }
+         }
+       }}
+      when is_binary(url) ->
+        with {:ok, max_concurrency} <- LawnBot.Utils.check_pos_int(max_concurrency),
+             {:ok, remaining} <- LawnBot.Utils.check_non_neg_int(remaining) do
+          shards = PersistentTerm.get({state.name, :shards})
 
-      _ ->
-        case Req.get(@plain_gateway_url,
-               headers: headers,
-               finch: [name: LawnBot.Finch, pool_tag: name],
-               decoders: [json: &JSON.decode/1]
-             ) do
-          {:ok, %Req.Response{body: %{"url" => url} = body}} when is_binary(url) ->
-            {:ok, parse_gateway(url, body, name)}
+          if remaining < shards,
+            do: Logger.warning("Available sessions (#{remaining}) is lower than shards=#{shards}.")
 
-          {:ok, %Req.Response{body: %{"code" => code, "message" => message}}} ->
-            {:error, {:qq_api, code, message}}
-
-          {:ok, response} ->
-            {:error, {:unexpected_response, response}}
-
-          {:error, exception} ->
-            {:error, exception}
+          gateway = %{url: url, max_concurrency: max_concurrency}
+          {:ok, gateway}
+        else
+          {:error, message} ->
+            {:error, {:invalid_gateway_response, message}}
         end
+
+      error ->
+        Utils.check_api_call_error(error)
     end
   end
 
@@ -150,93 +141,48 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp bootstrap(state) do
     name = state.name
 
-    with {:ok, token} <- fetch_access_token(name),
-         %{access_token: access_token} = token,
-         {:ok, gateway} <- fetch_gateway(access_token, name) do
-      TokenStore.put(state.token_table_tid, token.access_token)
-      %{url: url, shards: shards, max_concurrency: max_concurrency, remaining: remaining} = gateway
+    with {:ok, auth} <- fetch_auth(state),
+         {:ok, gateway} <- fetch_gateway(auth.access_token, state) do
+      %{url: url, max_concurrency: max_concurrency} = gateway
+      TokenStore.put(name, auth.access_token)
       PersistentTerm.put({name, :gateway_url}, url)
-      PersistentTerm.put({name, :shards}, shards)
       PersistentTerm.put({name, :max_concurrency}, max_concurrency)
-      warn_on_session_limit(remaining, shards)
-      state = schedule_token_refresh(state, token.expires_in)
-      start_shards(state)
+      state = state |> schedule_token_refresh(auth.expires_in) |> Map.put(:attempt_number, 0)
+      start_shards(name)
       {:noreply, state, :hibernate}
     else
-      {:error, reason} ->
-        log_failure("Failed to bootstrap", reason, name)
-        Process.send_after(self(), :bootstrap, @bootstrap_retry)
+      {:error, error} ->
+        log_failure("Failed to bootstrap", name, error)
+        state = %{state | attempt_number: state.attempt_number + 1}
+        delay = LawnBot.Utils.exp_backoff(state.attempt_number)
+        Process.send_after(self(), :bootstrap, delay)
         {:noreply, state}
     end
   end
 
-  @spec parse_gateway(String.t(), map(), atom()) :: map()
-  defp parse_gateway(url, body, name) do
-    limit = Map.get(body, "session_start_limit") || %{}
-    shards = positive_int(PersistentTerm.get({name, :shards}) || Map.get(body, "shards"), 1)
-
-    %{
-      url: url,
-      shards: shards,
-      max_concurrency: positive_int(Map.get(limit, "max_concurrency"), 1),
-      remaining: non_negative_int(Map.get(limit, "remaining"))
-    }
-  end
-
-  # QQ 平台返回的整数字段可能是字符串，且可能缺失或为负数。这里做统一解析。
-  @spec positive_int(integer() | String.t()) :: {:ok, pos_integer()} | :error
-  defp positive_int(value) when is_integer(value) and value > 0, do: {:ok, value}
-
-  defp positive_int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {integer, ""} when integer > 0 -> {:ok, integer}
-      _ -> :error
-    end
-  end
-
-  defp positive_int(_value), do: :error
-
-  @spec positive_int(integer() | String.t(), pos_integer()) :: pos_integer()
-  defp positive_int(value, default) do
-    case positive_int(value) do
-      {:ok, integer} -> integer
-      :error -> default
-    end
-  end
-
-  @spec non_negative_int(integer() | String.t()) :: non_neg_integer() | nil
-  defp non_negative_int(value) when is_integer(value) and value >= 0, do: value
-
-  defp non_negative_int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {integer, ""} when integer >= 0 -> integer
-      _ -> nil
-    end
-  end
-
-  defp non_negative_int(_value), do: nil
-
-  @spec start_shards(state()) :: :ok
-  defp start_shards(%{name: name, token_table_tid: tid}) do
+  @spec start_shards(atom()) :: :ok
+  defp start_shards(name) do
     shards = PersistentTerm.get({name, :shards})
 
     started =
       0..(shards - 1)
-      |> Stream.map(fn shard_id -> start_shard(name, tid, shard_id, shards) end)
+      |> Stream.map(fn shard_id -> start_shard(name, shard_id) end)
       |> Enum.count(&is_pid/1)
 
-    Logger.info("#{QQ.bot_name(name)} started #{started}/#{shards} shard(s)")
+    Logger.info("#{Utils.bot_name(name)} started #{started}/#{shards} shard(s)")
   end
 
-  @spec start_shard(atom(), ETS.tid(), non_neg_integer(), pos_integer()) :: pid() | nil
-  defp start_shard(name, tid, shard_id, shards) do
+  @spec start_shard(atom(), non_neg_integer()) :: pid() | nil
+  defp start_shard(name, shard_id) do
     shard_state = %QQ.Shard{
       name: name,
-      shard: [shard_id, shards],
-      token_table_tid: tid
+      shard_id: shard_id
     }
 
-    case DynamicSupervisor.start_child(QQ.shard_supervisor_name(name), {QQ.Shard, shard_state}) do
+    case DynamicSupervisor.start_child(
+           Utils.shard_supervisor_via_tuple(name),
+           {QQ.Shard, shard_state}
+         ) do
       {:ok, pid} ->
         pid
 
@@ -244,7 +190,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         pid
 
       {:error, reason} ->
-        Logger.error("Failed to start #{QQ.bot_name(name)} shard #{shard_id}: #{inspect(reason)}")
+        Logger.error(
+          "Failed to start #{Utils.bot_name(name)} shard #{shard_id}: #{inspect(reason)}"
+        )
+
         nil
     end
   end
@@ -261,39 +210,28 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
           %{state | refresh_ref: nil}
       end
 
-    # `expires_in` 是 token 的剩余有效期（有效期内重复获取返回同一个 token），
-    # 不是固定 7200 秒。刷新点取「剩余 30 秒」：若贴着 60 秒窗口边界刷新，
-    # 稍有偏差就会拿回旧 token（expires_in≈60），再被下面的 1 秒下限立即重试，
-    # 表现就是两次刷新相隔约 1 秒。
     delay = max((expires_in - @token_refresh_margin) * 1_000, 1_000)
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
   end
 
-  @spec log_failure(String.t(), term(), atom()) :: :ok
-  defp log_failure(prefix, reason, name) do
-    case reason do
-      {:qq_api, code, message} ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: #{code}, #{message}")
+  @spec log_failure(String.t(), atom(), term()) :: :ok
+  defp log_failure(prefix, name, error) do
+    case error do
+      {:qq_api, http_status, code, message} ->
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: HTTP #{http_status}, #{code}, #{message}")
 
-      {:unexpected_response, _} ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: unexpected response")
+      {:unexpected_response, http_status, response} ->
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: HTTP #{http_status}, #{inspect(response)}")
 
-      exception ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: #{inspect(exception)}")
+      {:invalid_field_type, message} ->
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: invalid_field_type: #{message}")
+
+      message ->
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: #{message}")
     end
   end
 
-  @spec warn_on_session_limit(non_neg_integer(), pos_integer()) :: :ok
-  defp warn_on_session_limit(remaining, shards) when is_integer(remaining) and remaining < shards do
-    Logger.warning(
-      "session_start_limit.remaining=#{remaining} is lower than shards=#{shards}; " <>
-        "extra Identify requests may be rejected until the limit resets"
-    )
-  end
-
-  defp warn_on_session_limit(_remaining, _shards), do: :ok
-
-  # 构造机器人 token。形如 `QQBot <access_token>`。
+  # Generate the authorization token for API requests. It looks like "QQBot <access_token>".
   @spec token(String.t()) :: String.t()
   defp token(access_token), do: "QQBot #{access_token}"
 end
