@@ -49,7 +49,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
     case fetch_auth(state) do
       {:ok, auth} ->
-        Logger.info("Refreshed token for #{QQ.bot_name(name)}")
+        Logger.info("Refreshed token for #{Utils.bot_name(name)}")
         TokenStore.put(name, auth.access_token)
         state = state |> schedule_token_refresh(auth.expires_in) |> Map.put(:attempt_number, 0)
         {:noreply, schedule_token_refresh(state, auth.expires_in)}
@@ -169,7 +169,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       |> Stream.map(fn shard_id -> start_shard(name, shard_id) end)
       |> Enum.count(&is_pid/1)
 
-    Logger.info("#{QQ.bot_name(name)} started #{started}/#{shards} shard(s)")
+    Logger.info("#{Utils.bot_name(name)} started #{started}/#{shards} shard(s)")
   end
 
   @spec start_shard(atom(), non_neg_integer()) :: pid() | nil
@@ -179,7 +179,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       shard_id: shard_id
     }
 
-    case DynamicSupervisor.start_child(QQ.shard_supervisor_via_tuple(name), {QQ.Shard, shard_state}) do
+    case DynamicSupervisor.start_child(
+           Utils.shard_supervisor_via_tuple(name),
+           {QQ.Shard, shard_state}
+         ) do
       {:ok, pid} ->
         pid
 
@@ -187,7 +190,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         pid
 
       {:error, reason} ->
-        Logger.error("Failed to start #{QQ.bot_name(name)} shard #{shard_id}: #{inspect(reason)}")
+        Logger.error(
+          "Failed to start #{Utils.bot_name(name)} shard #{shard_id}: #{inspect(reason)}"
+        )
+
         nil
     end
   end
@@ -212,16 +218,16 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp log_failure(prefix, name, error) do
     case error do
       {:qq_api, http_status, code, message} ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: HTTP #{http_status}, #{code}, #{message}")
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: HTTP #{http_status}, #{code}, #{message}")
 
       {:unexpected_response, http_status, response} ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: HTTP #{http_status}, #{inspect(response)}")
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: HTTP #{http_status}, #{inspect(response)}")
 
       {:invalid_field_type, message} ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: invalid_field_type: #{message}")
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: invalid_field_type: #{message}")
 
       message ->
-        Logger.error("#{prefix} #{QQ.bot_name(name)}: #{message}")
+        Logger.error("#{prefix} #{Utils.bot_name(name)}: #{message}")
     end
   end
 

@@ -21,4 +21,18 @@ defmodule LawnBot.Adapters.QQ.Utils do
         {:error, Exception.message(exception)}
     end
   end
+
+  @doc "Name of the bot, used in logs and error messages."
+  @spec bot_name(atom()) :: String.t()
+  def bot_name(name), do: "QQ Bot: #{name}"
+
+  @spec shard_supervisor_via_tuple(module()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
+  def shard_supervisor_via_tuple(name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, name}}}
+
+  @spec task_supervisor_via_tuple(module()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
+  def task_supervisor_via_tuple(name),
+    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, name}}}
 end

@@ -9,6 +9,7 @@ defmodule LawnBot.Adapters.QQ do
 
   alias :persistent_term, as: PersistentTerm
   alias LawnBot.Adapters.QQ.Coordinator
+  alias LawnBot.Adapters.QQ.Utils
 
   require Logger
 
@@ -26,18 +27,6 @@ defmodule LawnBot.Adapters.QQ do
           | :forums_event
           | :audio_action
           | :public_guild_messages
-
-  @type options() :: [
-          app_id: String.t(),
-          client_secret: String.t(),
-          name: atom(),
-          handler: handler(),
-          os: String.t(),
-          browser: String.t(),
-          device: String.t(),
-          permissions: [valid_permissions()],
-          shards: pos_integer()
-        ]
 
   @permissions %{
     guilds: 1,
@@ -58,6 +47,7 @@ defmodule LawnBot.Adapters.QQ do
   @options_schema NimbleOptions.new!(
                     app_id: [
                       type: {:custom, LawnBot.Utils, :check_empty_string, []},
+                      type_spec: quote(do: String.t()),
                       type_doc: "`t:String.t/0`, and must be non-empty.",
                       required: true,
                       doc: "QQ Bot APP ID",
@@ -65,46 +55,50 @@ defmodule LawnBot.Adapters.QQ do
                     ],
                     client_secret: [
                       type: {:custom, LawnBot.Utils, :check_empty_string, []},
+                      type_spec: quote(do: String.t()),
                       type_doc: "`t:String.t/0`, and must be non-empty.",
                       required: true,
-                      doc: "QQ Bot Client Secret",
+                      doc: "QQ Bot Client Secret.",
                       redact: true
                     ],
                     name: [
                       type: :atom,
                       required: true,
-                      doc: "Adapter instance name, used to distinguish different bots"
+                      doc: "Adapter instance name, used to distinguish different bots."
                     ],
                     handler: [
                       type: :atom,
                       required: false,
                       default: LawnBot.ExampleHandler,
-                      doc: "Event handler, a module implementing `LawnBot.Handler`"
+                      doc: "Event handler, a module implementing `LawnBot.Handler`."
                     ],
                     os: [
                       type: :string,
+                      type_spec: quote(do: String.t()),
                       required: false,
                       default: to_string(elem(:os.type(), 1)),
-                      doc: "`$os` field during authentication"
+                      doc: "`$os` field during authentication."
                     ],
                     browser: [
                       type: :string,
+                      type_spec: quote(do: String.t()),
                       required: false,
                       default: "LawnBot",
-                      doc: "`$browser` field during authentication"
+                      doc: "`$browser` field during authentication."
                     ],
                     device: [
                       type: :string,
+                      type_spec: quote(do: String.t()),
                       required: false,
                       default: "LawnBot",
-                      doc: "`$device` field during authentication"
+                      doc: "`$device` field during authentication."
                     ],
                     permissions: [
                       type: {:list, {:in, Map.keys(@permissions)}},
                       type_doc: "`t:valid_permissions/0`",
                       required: false,
                       default: @default_permissions,
-                      doc: "List of event permissions to subscribe to"
+                      doc: "List of event permissions to subscribe to."
                     ],
                     shards: [
                       type: :pos_integer,
@@ -113,6 +107,9 @@ defmodule LawnBot.Adapters.QQ do
                       doc: "Number of shards for the bot."
                     ]
                   )
+
+  @typedoc "Supported options:\n#{NimbleOptions.docs(@options_schema)}"
+  @type options() :: [unquote(NimbleOptions.option_typespec(@options_schema))]
 
   @api_base_url "https://api.bot.qq.com"
 
@@ -145,24 +142,10 @@ defmodule LawnBot.Adapters.QQ do
   @spec init(options()) :: {:ok, {Supervisor.sup_flags(), [Supervisor.child_spec()]}}
   def init(opts) do
     name = Keyword.fetch!(opts, :name)
-    Logger.info("Starting #{bot_name(name)}")
+    Logger.info("Starting #{Utils.bot_name(name)}")
     store_configs(opts, name)
     start_children(opts, name)
   end
-
-  @spec shard_supervisor_via_tuple(module()) ::
-          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
-  def shard_supervisor_via_tuple(name),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.ShardSupervisor, name}}}
-
-  @spec task_supervisor_via_tuple(module()) ::
-          {:via, Registry, {LawnBot.AdapterRegistry, {module(), module()}}}
-  def task_supervisor_via_tuple(name),
-    do: {:via, Registry, {LawnBot.AdapterRegistry, {LawnBot.Adapters.QQ.TaskSupervisor, name}}}
-
-  @doc "Name of the bot, used in logs and error messages."
-  @spec bot_name(atom()) :: String.t()
-  def bot_name(name), do: "QQ Bot: #{name}"
 
   @spec store_configs(options(), atom()) :: :ok
   defp store_configs(opts, name) do
@@ -187,12 +170,12 @@ defmodule LawnBot.Adapters.QQ do
   @spec start_children(options(), atom()) ::
           {:ok, {Supervisor.sup_flags(), [Supervisor.child_spec()]}}
   defp start_children(opts, name) do
-    task_supervisor_name = task_supervisor_via_tuple(name)
+    task_supervisor_name = Utils.task_supervisor_via_tuple(name)
 
     finch_pool = Finch.Pool.new(@api_base_url, tag: name)
     pool_size = Keyword.fetch!(opts, :shards) * 16
 
-    shard_supervisor_name = shard_supervisor_via_tuple(name)
+    shard_supervisor_name = Utils.shard_supervisor_via_tuple(name)
 
     children = [
       {Task.Supervisor, name: task_supervisor_name},

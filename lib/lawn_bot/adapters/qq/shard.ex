@@ -9,7 +9,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   use WebSockex
 
   alias :persistent_term, as: PersistentTerm
-  alias LawnBot.Adapters.QQ
+  alias LawnBot.Adapters.QQ.Utils
   alias LawnBot.TokenStore
 
   require Logger
@@ -227,7 +227,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @spec shard_name(t()) :: String.t()
   defp shard_name(%__MODULE__{shard_id: shard_id, name: name}) do
     shards = PersistentTerm.get({name, :shards})
-    "#{QQ.bot_name(name)} shard #{shard_id + 1}/#{shards}"
+    "#{Utils.bot_name(name)} shard #{shard_id + 1}/#{shards}"
   end
 
   # Construct OpCode 2 "Identify" payload, using `access_token` and `shard_id`.
@@ -266,7 +266,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   defp handle_event(payload, state) do
     name = state.name
-    task_supervisor = QQ.task_supervisor_via_tuple(name)
+    task_supervisor = Utils.task_supervisor_via_tuple(name)
     handler = :persistent_term.get(name, nil)
 
     Task.Supervisor.start_child(task_supervisor, fn ->
