@@ -34,8 +34,9 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   end
 
   @doc "Coordinator 进程在 Registry 中的名字。"
-  @spec via_tuple(module()) :: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, module()}}}
-  def via_tuple(name), do: {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, name}}}
+  @spec via_tuple(module()) ::
+          {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, module()}}}
+  def via_tuple(name), do: {:via, Registry, {LawnBot.AdapterRegistry, {__MODULE__, name}}}
 
   @doc "Launch coordinator asynchronously."
   @impl GenServer
@@ -118,22 +119,29 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
          }
        }}
       when is_binary(url) ->
-        with {:ok, max_concurrency} <- LawnBot.Utils.check_pos_int(max_concurrency),
-             {:ok, remaining} <- LawnBot.Utils.check_non_neg_int(remaining) do
-          shards = PersistentTerm.get({state.name, :shards})
-
-          if remaining < shards,
-            do: Logger.warning("Available sessions (#{remaining}) is lower than shards=#{shards}.")
-
-          gateway = %{url: url, max_concurrency: max_concurrency}
-          {:ok, gateway}
-        else
-          {:error, message} ->
-            {:error, {:invalid_gateway_response, message}}
-        end
+        parse_gateway(state.name, url, max_concurrency, remaining)
 
       error ->
         Utils.check_api_call_error(error)
+    end
+  end
+
+  @spec parse_gateway(atom(), String.t(), pos_integer(), non_neg_integer()) ::
+          {:ok, %{url: String.t(), max_concurrency: pos_integer()}}
+          | {:error, {:invalid_gateway_response, String.t()}}
+  defp parse_gateway(name, url, max_concurrency, remaining) do
+    with {:ok, max_concurrency} <- LawnBot.Utils.check_pos_int(max_concurrency),
+         {:ok, remaining} <- LawnBot.Utils.check_non_neg_int(remaining) do
+      shards = PersistentTerm.get({name, :shards})
+
+      if remaining < shards,
+        do: Logger.warning("Available sessions (#{remaining}) is lower than shards=#{shards}.")
+
+      gateway = %{url: url, max_concurrency: max_concurrency}
+      {:ok, gateway}
+    else
+      {:error, message} ->
+        {:error, {:invalid_gateway_response, message}}
     end
   end
 
