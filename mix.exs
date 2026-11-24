@@ -28,6 +28,7 @@ defmodule LawnBot.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:nimble_options, "~> 1.2"},
+      {:protobuf, "~> 0.17.1"},
       {:req, "~> 0.7.5"},
       {:styler, "~> 1.12", only: [:dev, :test], runtime: false},
       {:websockex, "~> 0.5.1"}

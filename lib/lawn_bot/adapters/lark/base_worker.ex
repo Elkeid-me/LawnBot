@@ -14,7 +14,6 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
   alias LawnBot.Adapters.Lark.Api
   alias LawnBot.Adapters.Lark.EventProcess
   alias LawnBot.Adapters.Lark.Frame
-  alias LawnBot.Adapters.Lark.Proto
   alias LawnBot.Adapters.Lark.Utils
   alias LawnBot.Response
   alias LawnBot.TokenStore
@@ -81,7 +80,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
   def handle_frame({:binary, data}, state) do
     state = %{state | last_frame_at: now_ms()}
 
-    case Proto.decode_frame(data) do
+    case Frame.decode_frame(data) do
       {:ok, %Frame{method: 0} = frame} ->
         handle_control_frame(frame, state)
 
@@ -121,7 +120,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
       state = %{state | seq_id: state.seq_id + 1}
       state = schedule_ping(state)
 
-      {:reply, {:binary, Proto.encode_frame(ping_frame(state))}, state}
+      {:reply, {:binary, Frame.encode_frame(ping_frame(state))}, state}
     end
   end
 
@@ -143,21 +142,20 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
   end
 
   defp handle_control_frame(frame, state) do
-    case frame.headers["type"] do
+    case Frame.get_header(frame, "type") do
       "pong" ->
         state = apply_ping_config(state, frame.payload)
         {:ok, schedule_ping(state)}
 
       "ping" ->
-        pong = %Frame{
-          seq_id: frame.seq_id,
-          log_id: frame.log_id,
-          service: frame.service,
-          method: 0,
-          headers: Map.put(frame.headers, "type", "pong")
-        }
+        pong =
+          Frame.put_header(
+            %Frame{seq_id: frame.seq_id, log_id: frame.log_id, service: frame.service, method: 0},
+            "type",
+            "pong"
+          )
 
-        {:reply, {:binary, Proto.encode_frame(pong)}, state}
+        {:reply, {:binary, Frame.encode_frame(pong)}, state}
 
       _other ->
         {:ok, state}
@@ -168,12 +166,12 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
     {payload, state} = combine_fragments(frame, state)
     state = cleanup_fragments(state)
 
-    if frame.headers["type"] == "event" and is_binary(payload) do
+    if Frame.get_header(frame, "type") == "event" and is_binary(payload) do
       dispatch(payload, state)
     end
 
     ack = ack_frame(frame)
-    {:reply, {:binary, Proto.encode_frame(ack)}, state}
+    {:reply, {:binary, Frame.encode_frame(ack)}, state}
   end
 
   defp dispatch(payload, state) do
@@ -258,16 +256,16 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
       seq_id: state.seq_id,
       service: state.service_id,
       method: 0,
-      headers: %{"type" => "ping"}
+      headers: Frame.header_list(%{"type" => "ping"})
     }
   end
 
   defp ack_frame(frame) do
-    %{
-      frame
-      | payload: JSON.encode!(%{"code" => 200, "headers" => %{}, "data" => []}),
-        headers: Map.put(frame.headers, "biz_rt", "0")
-    }
+    Frame.put_header(
+      %{frame | payload: JSON.encode!(%{"code" => 200, "headers" => %{}, "data" => []})},
+      "biz_rt",
+      "0"
+    )
   end
 
   defp apply_ping_config(state, payload) when is_binary(payload) and payload != "" do
@@ -283,9 +281,9 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
   defp apply_ping_config(state, _payload), do: state
 
   defp combine_fragments(frame, state) do
-    sum = int_header(frame.headers["sum"])
-    seq = int_header(frame.headers["seq"])
-    message_id = frame.headers["message_id"]
+    sum = int_header(Frame.get_header(frame, "sum"))
+    seq = int_header(Frame.get_header(frame, "seq"))
+    message_id = Frame.get_header(frame, "message_id")
     payload = frame.payload || <<>>
 
     if fragmented?(sum, message_id, seq) do

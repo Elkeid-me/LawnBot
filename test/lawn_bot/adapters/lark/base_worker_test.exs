@@ -4,7 +4,6 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   alias LawnBot.Adapters.Feishu
   alias LawnBot.Adapters.Lark.BaseWorker
   alias LawnBot.Adapters.Lark.Frame
-  alias LawnBot.Adapters.Lark.Proto
   alias LawnBot.Adapters.Lark.Utils
   alias LawnBot.Response
   alias LawnBot.TestReqStub
@@ -101,11 +100,11 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   end
 
   defp data_frame(payload, headers \\ %{"type" => "event"}) do
-    %Frame{seq_id: 7, service: 42, method: 1, headers: headers, payload: payload}
+    %Frame{seq_id: 7, service: 42, method: 1, headers: Frame.header_list(headers), payload: payload}
   end
 
   defp ack_body(ack_binary) do
-    assert {:ok, ack} = Proto.decode_frame(ack_binary)
+    assert {:ok, ack} = Frame.decode_frame(ack_binary)
     {ack, JSON.decode!(ack.payload)}
   end
 
@@ -120,14 +119,14 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = data_frame(JSON.encode!(event_payload()))
 
     assert {:reply, {:binary, ack_binary}, _updated} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(frame)}, state())
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     {ack, body} = ack_body(ack_binary)
 
     assert ack.seq_id == 7
     assert ack.service == 42
-    assert ack.headers["biz_rt"] == "0"
-    assert ack.headers["type"] == "event"
+    assert Frame.get_header(ack, "biz_rt") == "0"
+    assert Frame.get_header(ack, "type") == "event"
     assert body == %{"code" => 200, "headers" => %{}, "data" => []}
 
     assert_receive {:handled,
@@ -145,7 +144,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = data_frame("{}", %{"type" => "card"})
 
     assert {:reply, {:binary, ack_binary}, _updated} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(frame)}, state())
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     {_ack, body} = ack_body(ack_binary)
     assert body["code"] == 200
@@ -172,13 +171,13 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
       data_frame(second, %{"type" => "event", "message_id" => "frag-1", "sum" => "2", "seq" => "1"})
 
     assert {:reply, {:binary, _ack}, state_after_first} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(first_frame)}, state())
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(first_frame)}, state())
 
     refute_receive {:handled, _event}, 100
     assert map_size(state_after_first.fragments) == 1
 
     assert {:reply, {:binary, _ack}, state_after_second} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(second_frame)}, state_after_first)
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(second_frame)}, state_after_first)
 
     assert state_after_second.fragments == %{}
     assert_receive {:handled, %LawnBot.Event{content: "hello"}}, 2_000
@@ -188,12 +187,12 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = %Frame{
       method: 0,
       service: 42,
-      headers: %{"type" => "pong"},
+      headers: Frame.header_list(%{"type" => "pong"}),
       payload: ~s({"PingInterval":30})
     }
 
     assert {:ok, updated} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(frame)}, state())
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     assert updated.ping_interval == 30_000
     assert is_reference(updated.ping_ref)
@@ -205,11 +204,11 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     shard_state = state()
 
     assert {:reply, {:binary, ping_binary}, updated} = BaseWorker.handle_info(:ping, shard_state)
-    assert {:ok, ping} = Proto.decode_frame(ping_binary)
+    assert {:ok, ping} = Frame.decode_frame(ping_binary)
 
     assert ping.method == 0
     assert ping.service == 42
-    assert ping.headers == %{"type" => "ping"}
+    assert Frame.get_header(ping, "type") == "ping"
     assert ping.seq_id == 1
     assert is_reference(updated.ping_ref)
 
@@ -229,13 +228,18 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   end
 
   test "replies to a server ping" do
-    frame = %Frame{seq_id: 3, method: 0, service: 42, headers: %{"type" => "ping"}}
+    frame = %Frame{
+      seq_id: 3,
+      method: 0,
+      service: 42,
+      headers: Frame.header_list(%{"type" => "ping"})
+    }
 
     assert {:reply, {:binary, pong_binary}, _state} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(frame)}, state())
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
-    assert {:ok, pong} = Proto.decode_frame(pong_binary)
-    assert pong.headers["type"] == "pong"
+    assert {:ok, pong} = Frame.decode_frame(pong_binary)
+    assert Frame.get_header(pong, "type") == "pong"
     assert pong.seq_id == 3
   end
 
@@ -279,7 +283,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = data_frame(JSON.encode!(event_payload()))
 
     assert {:reply, {:binary, _ack}, _updated} =
-             BaseWorker.handle_frame({:binary, Proto.encode_frame(frame)}, state())
+             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     assert_receive {:request, request}, 2_000
     body = request.body |> IO.iodata_to_binary() |> JSON.decode!()
