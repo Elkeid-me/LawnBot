@@ -17,6 +17,8 @@ defmodule LawnBot.AdapterSupervisorTest do
   test "rejects invalid adapter options" do
     assert {:error, :validation_failed} = AdapterSupervisor.start_adapter(:qq, [])
     assert {:error, :validation_failed} = AdapterSupervisor.start_adapter(:qq, app_id: "app")
+    assert {:error, :validation_failed} = AdapterSupervisor.start_adapter(:lark, [])
+    assert {:error, :validation_failed} = AdapterSupervisor.start_adapter(:feishu, [])
   end
 
   test "rejects non-atom platforms and non-list options" do
