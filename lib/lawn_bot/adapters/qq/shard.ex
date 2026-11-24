@@ -226,21 +226,21 @@ defmodule LawnBot.Adapters.QQ.Shard do
 
   @spec shard_name(t()) :: String.t()
   defp shard_name(%__MODULE__{shard_id: shard_id, name: name}) do
-    shards = PersistentTerm.get({name, :shards})
-    "#{Utils.bot_name(name)} shard #{shard_id + 1}/#{shards}"
+    workers = PersistentTerm.get({name, :workers})
+    "#{Utils.bot_name(name)} worker #{shard_id + 1}/#{workers}"
   end
 
   # Construct OpCode 2 "Identify" payload, using `access_token` and `shard_id`.
   @spec identify_payload(String.t(), atom(), non_neg_integer()) :: map()
   defp identify_payload(access_token, name, shard_id) do
-    shards = PersistentTerm.get({name, :shards})
+    workers = PersistentTerm.get({name, :workers})
 
     %{
       "op" => 2,
       "d" => %{
         "token" => access_token,
         "intents" => PersistentTerm.get({name, :permissions}),
-        "shard" => [shard_id, shards],
+        "shard" => [shard_id, workers],
         "properties" => %{
           "$os" => PersistentTerm.get({name, :os}),
           "$browser" => PersistentTerm.get({name, :browser}),

@@ -42,7 +42,7 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert options[:name] == @bot
     assert options[:handler] == LawnBot.ExampleHandler
     assert options[:permissions] == []
-    assert options[:connections] == 1
+    assert options[:workers] == 1
   end
 
   test "accepts custom token scopes" do
@@ -55,12 +55,12 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
              Lark.validate_options(Keyword.put(@options, :permissions, [:message_receive]))
   end
 
-  test "accepts a custom connection count" do
-    assert {:ok, options} = Lark.validate_options(Keyword.put(@options, :connections, 4))
-    assert options[:connections] == 4
+  test "accepts a custom worker count" do
+    assert {:ok, options} = Lark.validate_options(Keyword.put(@options, :workers, 4))
+    assert options[:workers] == 4
 
     assert {:error, %NimbleOptions.ValidationError{}} =
-             Lark.validate_options(Keyword.put(@options, :connections, 0))
+             Lark.validate_options(Keyword.put(@options, :workers, 0))
   end
 
   test "rejects missing credentials or non-keyword options" do
@@ -111,8 +111,8 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert is_function(:persistent_term.get(@bot), 1)
   end
 
-  test "scales the Finch pool size with the connection count" do
-    assert {:ok, opts} = Lark.validate_options(Keyword.put(@options, :connections, 3))
+  test "scales the Finch pool size with the worker count" do
+    assert {:ok, opts} = Lark.validate_options(Keyword.put(@options, :workers, 3))
 
     assert {:ok, {_flags, children}} =
              LawnBot.Adapters.Lark.Base.init(Keyword.put(opts, :adapter, Lark))

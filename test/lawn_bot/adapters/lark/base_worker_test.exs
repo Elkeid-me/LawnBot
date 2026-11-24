@@ -20,7 +20,6 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     ensure_token_store()
     TokenStore.put(@bot, @token)
     :persistent_term.put(@bot, fn _event -> %Response{action: :ignore} end)
-    :persistent_term.put({@bot, :shards}, 1)
 
     previous_req_options = Elixir.Application.fetch_env(:req, :default_options)
     Elixir.Application.put_env(:req, :default_options, adapter: TestReqStub)
@@ -30,7 +29,6 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
 
     on_exit(fn ->
       :persistent_term.erase(@bot)
-      :persistent_term.erase({@bot, :shards})
       :persistent_term.erase({TestReqStub, @messages_path})
 
       case previous_req_options do

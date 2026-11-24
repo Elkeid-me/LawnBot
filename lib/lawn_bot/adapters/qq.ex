@@ -100,11 +100,11 @@ defmodule LawnBot.Adapters.QQ do
                       default: @default_permissions,
                       doc: "List of event permissions to subscribe to."
                     ],
-                    shards: [
+                    workers: [
                       type: :pos_integer,
                       required: false,
                       default: 1,
-                      doc: "Number of shards for the bot."
+                      doc: "Number of shard workers for the bot."
                     ]
                   )
 
@@ -155,7 +155,7 @@ defmodule LawnBot.Adapters.QQ do
       apply(handler_module, :handle_event, [event])
     end)
 
-    Enum.each([:app_id, :client_secret, :shards, :os, :browser, :device], fn key ->
+    Enum.each([:app_id, :client_secret, :workers, :os, :browser, :device], fn key ->
       PersistentTerm.put({name, key}, Keyword.fetch!(opts, key))
     end)
 
@@ -173,7 +173,7 @@ defmodule LawnBot.Adapters.QQ do
     task_supervisor_name = Utils.task_supervisor_via_tuple(name)
 
     finch_pool = Finch.Pool.new(@api_base_url, tag: name)
-    pool_size = Keyword.fetch!(opts, :shards) * 16
+    pool_size = Keyword.fetch!(opts, :workers) * 16
 
     shard_supervisor_name = Utils.shard_supervisor_via_tuple(name)
 

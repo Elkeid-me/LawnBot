@@ -4,8 +4,8 @@ defmodule LawnBot.Adapters.Lark.Utils do
   @spec bot_name(module(), atom()) :: String.t()
   def bot_name(adapter, name), do: "#{adapter.label()} Bot: #{name}"
 
-  @spec connection_name(module(), atom(), pos_integer()) :: String.t()
-  def connection_name(adapter, name, index), do: "#{bot_name(adapter, name)} connection #{index}"
+  @spec worker_name(module(), atom(), pos_integer()) :: String.t()
+  def worker_name(adapter, name, index), do: "#{bot_name(adapter, name)} worker #{index}"
 
   @spec adapter_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
   def adapter_via_tuple(adapter, name), do: via_tuple(adapter, name)

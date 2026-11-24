@@ -3,8 +3,8 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
   Bootstraps a Lark/Feishu bot: obtains the tenant access token, then requests
   one WebSocket endpoint per configured connection and starts the workers.
 
-  Lark/Feishu long connections are clustered: with multiple connections, each
-  event is delivered to one randomly selected connection. There is no sharding
+  Lark/Feishu long connections are clustered: with multiple workers, each
+  event is delivered to one randomly selected worker. There is no sharding
   or local event routing.
   """
 
@@ -22,7 +22,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
   @type state() :: %{
           adapter: module(),
           name: atom(),
-          connections: pos_integer(),
+          workers: pos_integer(),
           attempt_number: non_neg_integer(),
           refresh_ref: reference() | nil
         }
@@ -31,10 +31,10 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
           GenServer.on_start()
   def start_link({adapter, name}), do: start_link({adapter, name, 1})
 
-  def start_link({adapter, name, connections}) do
+  def start_link({adapter, name, workers}) do
     GenServer.start_link(
       __MODULE__,
-      {adapter, name, connections},
+      {adapter, name, workers},
       name: via_tuple(adapter, name)
     )
   end
@@ -47,12 +47,12 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
           {:ok, state(), {:continue, :bootstrap}}
   def init({adapter, name}), do: init({adapter, name, 1})
 
-  def init({adapter, name, connections}) do
+  def init({adapter, name, workers}) do
     {:ok,
      %{
        adapter: adapter,
        name: name,
-       connections: connections,
+       workers: workers,
        attempt_number: 0,
        refresh_ref: nil
      }, {:continue, :bootstrap}}
@@ -68,19 +68,19 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
   def handle_info(_message, state), do: {:noreply, state}
 
   defp bootstrap(state) do
-    %{adapter: adapter, name: name, connections: connections} = state
+    %{adapter: adapter, name: name, workers: workers} = state
 
     case Api.fetch_tenant_token(adapter, name) do
       {:ok, auth} ->
         TokenStore.put(name, auth.access_token)
 
-        case start_workers(adapter, name, connections) do
+        case start_workers(adapter, name, workers) do
           :ok ->
             state = schedule_token_refresh(%{state | attempt_number: 0}, auth.expires_in)
             {:noreply, state, :hibernate}
 
           {:error, error} ->
-            log_failure("Failed to start connections for", adapter, name, error)
+            log_failure("Failed to start workers for", adapter, name, error)
             retry_bootstrap(state)
         end
 
@@ -130,8 +130,8 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
     %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
   end
 
-  defp start_workers(adapter, name, connections) do
-    Enum.reduce_while(1..connections, :ok, fn index, :ok ->
+  defp start_workers(adapter, name, workers) do
+    Enum.reduce_while(1..workers, :ok, fn index, :ok ->
       with {:ok, endpoint} <- Api.fetch_ws_endpoint(adapter, name),
            :ok <- start_worker(adapter, name, index, endpoint) do
         {:cont, :ok}
@@ -163,7 +163,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
 
       {:error, reason} ->
         Logger.error(
-          "Failed to start #{Utils.connection_name(adapter, name, index)}: #{inspect(reason)}"
+          "Failed to start #{Utils.worker_name(adapter, name, index)}: #{inspect(reason)}"
         )
 
         {:error, reason}

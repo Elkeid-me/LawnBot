@@ -17,7 +17,7 @@ config :lawn_bot,
     #     name: :LawnBotFeishu,
     #     handler: LawnBot.ExampleHandler,
     #     permissions: ["im:message:receive_as_bot", "im:message:send_as_bot"],
-    #     connections: 1
+    #     workers: 1
     #   }
     # ],
     # lark: [
@@ -27,7 +27,7 @@ config :lawn_bot,
     #     name: :LawnBotLark,
     #     handler: LawnBot.ExampleHandler,
     #     permissions: ["im:message:receive_as_bot", "im:message:send_as_bot"],
-    #     connections: 1
+    #     workers: 1
     #   }
     # ]
   ]

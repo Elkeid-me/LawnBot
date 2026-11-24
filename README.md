@@ -56,7 +56,7 @@ config :lawn_bot,
 2. `:client_secret`（必需）字符串。QQ 开放平台获取的 Client Secret。建议设置为环境变量。
 3. `:name`（必需）Bot 的名称，必须为 `atom()` 类型。不同 Bot 的名称不能相同。
 4. `:permissions`（可选）`atom()` 列表。事件订阅，默认只订阅平台默认有权限的三类事件 `[:guilds, :guild_members, :public_guild_messages]`
-5. `:shards`（可选）整数。覆盖 `/gateway/bot` 建议的分片数。
+5. `:workers`（可选）正整数，默认 `1`。QQ 分片工作进程数量，用于覆盖 `/gateway/bot` 建议的分片数。
 6. `:os`、`:browser`、`:device`（可选）客户端信息。
    - `:os` 字符串，无实际意义。默认为 `:os.type() |> elem(1) |> to_string()`，在 Linux 下为 `linux`，Windows 下为 `"nt"`
    - `:browser` 字符串，无实际意义。默认为 `"LawnBot"`。
@@ -70,7 +70,7 @@ config :lawn_bot,
 3. `:name`（必需）`atom()`。Bot 名称，不同 Bot 的名称不能相同。
 4. `:handler`（可选）实现了 `LawnBot.Handler` 的模块，默认为 `LawnBot.ExampleHandler`。
 5. `:permissions`（可选）字符串列表，默认 `[]`。获取 `tenant_access_token` 时写入 OAuth `scope` 的应用身份权限列表，例如 `["im:message:receive_as_bot", "im:message:send_as_bot"]`。为空时会省略 `scope`，由平台使用该应用在租户中已开通的全部应用身份权限。列表中的权限必须已在开发者后台开通，否则 token 接口会返回 `20068`。
-6. `:connections`（可选）正整数，默认 `1`。每个 Bot 建立的 WebSocket 长连接数。Lark/飞书的长连接是集群模式，事件会随机推送到其中一条连接；需要提高并发或冗余时可以增加该值。所有连接共享同一个 `tenant_access_token`。
+6. `:workers`（可选）正整数，默认 `1`。每个 Bot 启动的 WebSocket 工作进程数。Lark/飞书的长连接是集群模式，事件会随机推送到其中一个 worker；需要提高并发或冗余时可以增加该值。所有 worker 共享同一个 `tenant_access_token`。
 
 Lark / 飞书使用长连接接收事件，不使用分片。事件类型（如 `im.message.receive_v1`）需要在开放平台的应用后台订阅，本框架只监听接收消息事件。
 

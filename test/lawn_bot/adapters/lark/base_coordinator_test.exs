@@ -52,7 +52,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
   end
 
   defp state do
-    %{adapter: Feishu, name: @bot, connections: 1, attempt_number: 0, refresh_ref: nil}
+    %{adapter: Feishu, name: @bot, workers: 1, attempt_number: 0, refresh_ref: nil}
   end
 
   defp stub(path, body) do
@@ -66,7 +66,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
 
     assert {:ok, ^expected, {:continue, :bootstrap}} = BaseCoordinator.init({Feishu, @bot})
 
-    assert {:ok, %{connections: 3}, {:continue, :bootstrap}} =
+    assert {:ok, %{workers: 3}, {:continue, :bootstrap}} =
              BaseCoordinator.init({Feishu, @bot, 3})
   end
 
@@ -75,7 +75,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
              BaseCoordinator.via_tuple(Feishu, @bot)
   end
 
-  test "starts one worker per configured connection" do
+  test "starts one worker per configured worker count" do
     start_registry()
 
     start_supervised!(
@@ -108,7 +108,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
     end)
 
     assert {:noreply, updated, :hibernate} =
-             BaseCoordinator.handle_continue(:bootstrap, %{state() | connections: 3})
+             BaseCoordinator.handle_continue(:bootstrap, %{state() | workers: 3})
 
     assert :counters.get(endpoint_requests, 1) == 3
     assert TokenStore.get(@bot) == "t-token"

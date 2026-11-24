@@ -19,7 +19,7 @@ defmodule LawnBot.Adapters.QQTest do
       assert options[:browser] == "LawnBot"
       assert options[:device] == "LawnBot"
       assert options[:permissions] == [:guilds, :guild_members, :public_guild_messages]
-      assert options[:shards] == 1
+      assert options[:workers] == 1
     end
 
     test "keeps explicitly configured values" do
@@ -30,7 +30,7 @@ defmodule LawnBot.Adapters.QQTest do
           browser: "browser",
           device: "device",
           permissions: [:group_and_c2c, :interaction],
-          shards: 4
+          workers: 4
         )
 
       assert {:ok, validated} = QQ.validate_options(options)
@@ -39,7 +39,7 @@ defmodule LawnBot.Adapters.QQTest do
       assert validated[:browser] == "browser"
       assert validated[:device] == "device"
       assert validated[:permissions] == [:group_and_c2c, :interaction]
-      assert validated[:shards] == 4
+      assert validated[:workers] == 4
     end
 
     test "requires app_id, client_secret and name" do
@@ -66,7 +66,7 @@ defmodule LawnBot.Adapters.QQTest do
                QQ.validate_options(Keyword.put(@valid_options, :name, "TestBot"))
 
       assert {:error, %NimbleOptions.ValidationError{}} =
-               QQ.validate_options(Keyword.put(@valid_options, :shards, 0))
+               QQ.validate_options(Keyword.put(@valid_options, :workers, 0))
 
       assert {:error, %NimbleOptions.ValidationError{}} =
                QQ.validate_options(Keyword.put(@valid_options, :permissions, [:unknown]))
@@ -94,7 +94,7 @@ defmodule LawnBot.Adapters.QQTest do
       name: :QQInitTestBot,
       handler: LawnBot.ExampleHandler,
       permissions: [:guilds, :group_and_c2c],
-      shards: 2
+      workers: 2
     ]
 
     setup do
@@ -103,7 +103,7 @@ defmodule LawnBot.Adapters.QQTest do
       end
 
       on_exit(fn ->
-        for key <- [:app_id, :client_secret, :shards, :os, :browser, :device, :permissions] do
+        for key <- [:app_id, :client_secret, :workers, :os, :browser, :device, :permissions] do
           :persistent_term.erase({:QQInitTestBot, key})
         end
 
@@ -123,7 +123,7 @@ defmodule LawnBot.Adapters.QQTest do
 
       assert :persistent_term.get({:QQInitTestBot, :app_id}) == "app"
       assert :persistent_term.get({:QQInitTestBot, :client_secret}) == "secret"
-      assert :persistent_term.get({:QQInitTestBot, :shards}) == 2
+      assert :persistent_term.get({:QQInitTestBot, :workers}) == 2
       assert :persistent_term.get({:QQInitTestBot, :os}) == to_string(elem(:os.type(), 1))
       assert :persistent_term.get({:QQInitTestBot, :browser}) == "LawnBot"
       assert :persistent_term.get({:QQInitTestBot, :device}) == "LawnBot"

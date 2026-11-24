@@ -51,17 +51,17 @@ defmodule LawnBot.Adapters.Lark.Base do
                           "They are sent as the OAuth `scope` field. When empty, the platform uses " <>
                           "all scopes activated for the app in the tenant."
                     ],
-                    connections: [
+                    workers: [
                       type: :pos_integer,
                       required: false,
                       default: 1,
                       doc:
-                        "Number of WebSocket long connections. Lark/Feishu delivers each event " <>
-                          "to one randomly selected connection."
+                        "Number of WebSocket workers. Lark/Feishu delivers each event to one " <>
+                          "randomly selected worker."
                     ]
                   )
 
-  @pool_size_per_connection 16
+  @pool_size_per_worker 16
 
   @typedoc "Supported options:\n#{NimbleOptions.docs(@options_schema)}"
   @type options() :: [unquote(NimbleOptions.option_typespec(@options_schema))]
@@ -96,13 +96,13 @@ defmodule LawnBot.Adapters.Lark.Base do
   def init(opts) do
     adapter = Keyword.fetch!(opts, :adapter)
     name = Keyword.fetch!(opts, :name)
-    connections = Keyword.fetch!(opts, :connections)
+    workers = Keyword.fetch!(opts, :workers)
 
-    Logger.info("Starting #{Utils.bot_name(adapter, name)} with #{connections} connection(s)")
+    Logger.info("Starting #{Utils.bot_name(adapter, name)} with #{workers} worker(s)")
     store_configs(opts, name)
 
     finch_pool = Finch.Pool.new(adapter.base_url(), tag: name)
-    pool_size = connections * @pool_size_per_connection
+    pool_size = workers * @pool_size_per_worker
 
     children = [
       {Task.Supervisor, name: Utils.task_supervisor_via_tuple(adapter, name)},
@@ -111,7 +111,7 @@ defmodule LawnBot.Adapters.Lark.Base do
        strategy: :one_for_one,
        max_seconds: 30,
        name: Utils.worker_supervisor_via_tuple(adapter, name)},
-      {BaseCoordinator, {adapter, name, connections}}
+      {BaseCoordinator, {adapter, name, workers}}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one, max_restarts: 3, max_seconds: 30)

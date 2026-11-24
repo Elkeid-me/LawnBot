@@ -9,7 +9,7 @@ defmodule LawnBot.Adapters.QQ.ShardTest do
 
   @bot :ShardTestBot
   @token "QQBot access-token"
-  @persistent_keys [:max_concurrency, :shards, :permissions, :os, :browser, :device]
+  @persistent_keys [:max_concurrency, :workers, :permissions, :os, :browser, :device]
 
   setup do
     ensure_token_store()
@@ -18,7 +18,7 @@ defmodule LawnBot.Adapters.QQ.ShardTest do
 
     persistent_values = [
       max_concurrency: 1,
-      shards: 2,
+      workers: 2,
       permissions: 33_554_433,
       os: "test",
       browser: "test",

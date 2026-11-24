@@ -10,7 +10,7 @@ defmodule LawnBot.Adapters.QQ.CoordinatorTest do
   @bot :CoordinatorTestBot
   @token_path "/app/getAppAccessToken"
   @gateway_path "/gateway/bot"
-  @persistent_keys [:app_id, :client_secret, :shards]
+  @persistent_keys [:app_id, :client_secret, :workers]
 
   setup do
     ensure_token_store()
@@ -18,7 +18,7 @@ defmodule LawnBot.Adapters.QQ.CoordinatorTest do
 
     :persistent_term.put({@bot, :app_id}, "app")
     :persistent_term.put({@bot, :client_secret}, "secret")
-    :persistent_term.put({@bot, :shards}, 1)
+    :persistent_term.put({@bot, :workers}, 1)
 
     previous_req_options = Elixir.Application.fetch_env(:req, :default_options)
     Elixir.Application.put_env(:req, :default_options, adapter: TestReqStub)

@@ -132,10 +132,10 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
   defp parse_gateway(name, url, max_concurrency, remaining) do
     with {:ok, max_concurrency} <- LawnBot.Utils.check_pos_int(max_concurrency),
          {:ok, remaining} <- LawnBot.Utils.check_non_neg_int(remaining) do
-      shards = PersistentTerm.get({name, :shards})
+      workers = PersistentTerm.get({name, :workers})
 
-      if remaining < shards,
-        do: Logger.warning("Available sessions (#{remaining}) is lower than shards=#{shards}.")
+      if remaining < workers,
+        do: Logger.warning("Available sessions (#{remaining}) is lower than workers=#{workers}.")
 
       gateway = %{url: url, max_concurrency: max_concurrency}
       {:ok, gateway}
@@ -156,7 +156,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
       PersistentTerm.put({name, :gateway_url}, url)
       PersistentTerm.put({name, :max_concurrency}, max_concurrency)
       state = state |> schedule_token_refresh(auth.expires_in) |> Map.put(:attempt_number, 0)
-      start_shards(name)
+      start_workers(name)
       {:noreply, state, :hibernate}
     else
       {:error, error} ->
@@ -168,23 +168,23 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
     end
   end
 
-  @spec start_shards(atom()) :: :ok
-  defp start_shards(name) do
-    shards = PersistentTerm.get({name, :shards})
+  @spec start_workers(atom()) :: :ok
+  defp start_workers(name) do
+    workers = PersistentTerm.get({name, :workers})
 
     started =
-      0..(shards - 1)
-      |> Stream.map(fn shard_id -> start_shard(name, shard_id) end)
+      0..(workers - 1)
+      |> Stream.map(fn worker_id -> start_worker(name, worker_id) end)
       |> Enum.count(&is_pid/1)
 
-    Logger.info("#{Utils.bot_name(name)} started #{started}/#{shards} shard(s)")
+    Logger.info("#{Utils.bot_name(name)} started #{started}/#{workers} worker(s)")
   end
 
-  @spec start_shard(atom(), non_neg_integer()) :: pid() | nil
-  defp start_shard(name, shard_id) do
+  @spec start_worker(atom(), non_neg_integer()) :: pid() | nil
+  defp start_worker(name, worker_id) do
     shard_state = %QQ.Shard{
       name: name,
-      shard_id: shard_id
+      shard_id: worker_id
     }
 
     case DynamicSupervisor.start_child(
@@ -199,7 +199,7 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
       {:error, reason} ->
         Logger.error(
-          "Failed to start #{Utils.bot_name(name)} shard #{shard_id}: #{inspect(reason)}"
+          "Failed to start #{Utils.bot_name(name)} worker #{worker_id}: #{inspect(reason)}"
         )
 
         nil

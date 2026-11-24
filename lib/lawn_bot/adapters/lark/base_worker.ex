@@ -245,7 +245,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
 
   defp handle_response(_response, _state), do: :ok
 
-  defp log_name(state), do: Utils.connection_name(state.adapter, state.name, state.index)
+  defp log_name(state), do: Utils.worker_name(state.adapter, state.name, state.index)
 
   defp token(name) do
     TokenStore.get(name)
