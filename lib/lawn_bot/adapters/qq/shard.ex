@@ -9,6 +9,7 @@ defmodule LawnBot.Adapters.QQ.Shard do
   use WebSockex
 
   alias :persistent_term, as: PersistentTerm
+  alias LawnBot.Adapters.QQ.API
   alias LawnBot.Adapters.QQ.Utils
   alias LawnBot.TokenStore
 
@@ -277,111 +278,14 @@ defmodule LawnBot.Adapters.QQ.Shard do
   @spec handle_response(LawnBot.Response.t(), module()) :: :ok
   defp handle_response(%LawnBot.Response{action: action} = response, name)
        when action == :reply or action == :new_message do
-    send_message(response, TokenStore.get(name), name)
+    case API.send_message(name, TokenStore.get(name), response) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to send QQ message: #{inspect(reason)}")
+    end
   end
 
   defp handle_response(_response, _name), do: :ok
-
-  @spec send_message(LawnBot.Response.t(), String.t(), module()) :: :ok
-  defp send_message(response, access_token, name) do
-    url =
-      case(response.session_type) do
-        :group -> "https://api.bot.qq.com/v2/groups/#{response.session_id}/messages"
-        :c2c -> "https://api.bot.qq.com/v2/users/#{response.session_id}/messages"
-      end
-
-    message =
-      case response.action do
-        :reply ->
-          response
-          |> build_message_content(access_token, name)
-          |> Map.put("msg_id", response.reply_message_id)
-
-        :new_message ->
-          build_message_content(response, access_token, name)
-
-        _ ->
-          nil
-      end
-
-    headers = %{"authorization" => access_token, "content-type" => "application/json"}
-
-    Req.post(url,
-      headers: headers,
-      json: message,
-      finch: [name: LawnBot.Finch, pool_tag: name]
-    )
-
-    :ok
-  end
-
-  # 构造消息发送的 JSON 载荷
-  @spec build_message_content(LawnBot.Response.t(), String.t(), atom()) :: map()
-  defp build_message_content(response, access_token, name) do
-    media_info_task =
-      case response.attachment do
-        nil -> nil
-        _ -> Task.async(fn -> upload_attachment(response, access_token, name) end)
-      end
-
-    payload =
-      case response.text do
-        nil -> %{}
-        text -> %{"content" => text}
-      end
-
-    payload =
-      case response.reference_message_id do
-        nil -> payload
-        id -> Map.put(payload, "message_reference", %{"message_id" => id})
-      end
-
-    case media_info_task do
-      nil ->
-        Map.put(payload, "msg_type", 0)
-
-      task ->
-        payload
-        |> Map.put("msg_type", 7)
-        |> Map.put("media", %{"file_info" => Task.await(task, 30_000)})
-    end
-  end
-
-  @spec upload_attachment(LawnBot.Response.t(), String.t(), atom()) :: nil
-  defp upload_attachment(%LawnBot.Response{attachment: {:path, path}}, _access_token, _name)
-       when is_binary(path) do
-    nil
-  end
-
-  @spec upload_attachment(LawnBot.Response.t(), String.t(), atom()) :: nil
-  defp upload_attachment(%LawnBot.Response{attachment: {:url, url}} = response, access_token, name)
-       when is_binary(url) do
-    headers = %{"authorization" => access_token, "content-type" => "application/json"}
-
-    body = %{
-      "file_type" => 1,
-      "url" => url,
-      "srv_send_msg" => false
-    }
-
-    url =
-      case response.session_type do
-        :group -> "https://api.bot.qq.com/v2/groups/#{response.session_id}/files"
-        :c2c -> "https://api.bot.qq.com/v2/users/#{response.session_id}/files"
-      end
-
-    case Req.post(url, headers: headers, json: body, finch: [name: LawnBot.Finch, pool_tag: name]) do
-      {:ok, %Req.Response{status: 200, body: %{"file_info" => file_info}}}
-      when is_binary(file_info) ->
-        file_info
-
-      {:ok, %Req.Response{status: 400, body: %{"message" => message}}} ->
-        Logger.warning("Failed to upload attachment: #{message}")
-        nil
-
-      {:error, reason} ->
-        Logger.warning("Failed to upload attachment: #{inspect(reason)}")
-        nil
-    end
-  end
 end

@@ -7,15 +7,13 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
   alias :persistent_term, as: PersistentTerm
   alias LawnBot.Adapters.QQ
+  alias LawnBot.Adapters.QQ.API
   alias LawnBot.Adapters.QQ.Utils
   alias LawnBot.TokenStore
 
   require Logger
 
   @token_refresh_margin 30
-
-  @token_url "https://api.bot.qq.com/app/getAppAccessToken"
-  @gateway_url "https://api.bot.qq.com/gateway/bot"
 
   @type state() :: %{
           name: atom(),
@@ -73,77 +71,14 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
           {:ok, %{access_token: String.t(), expires_in: pos_integer()}}
           | {:error, {:invalid_field_type, String.t()}}
           | Utils.api_call_error()
-  defp fetch_auth(state) do
-    app_id = PersistentTerm.get({state.name, :app_id})
-    client_secret = PersistentTerm.get({state.name, :client_secret})
-    auth_body = %{"appId" => app_id, "clientSecret" => client_secret}
-
-    case Req.post(@token_url, json: auth_body, finch: [name: LawnBot.Finch, pool_tag: state.name]) do
-      {:ok,
-       %Req.Response{
-         status: 200,
-         body: %{"access_token" => access_token, "expires_in" => expires_in}
-       }} ->
-        with {:ok, access_token} <- LawnBot.Utils.check_empty_string(access_token),
-             {:ok, expires_in} <- LawnBot.Utils.check_pos_int(expires_in) do
-          access_token = token(access_token)
-          {:ok, %{access_token: access_token, expires_in: expires_in}}
-        else
-          {:error, message} ->
-            {:error, {:invalid_field_type, message}}
-        end
-
-      error ->
-        Utils.check_api_call_error(error)
-    end
-  end
+  defp fetch_auth(state), do: API.fetch_access_token(state.name)
 
   # Fetch the gateway URL and recommended shard count.
   @spec fetch_gateway(String.t(), state()) ::
-          {:ok, %{url: String.t(), max_concurrency: pos_integer()}}
+          {:ok, %{url: String.t(), max_concurrency: pos_integer(), remaining: non_neg_integer()}}
           | {:error, {:invalid_field_type, String.t()}}
           | Utils.api_call_error()
-  defp fetch_gateway(access_token, state) do
-    headers = %{"authorization" => access_token}
-
-    case Req.get(@gateway_url, headers: headers, finch: [name: LawnBot.Finch, pool_tag: state.name]) do
-      {:ok,
-       %Req.Response{
-         status: 200,
-         body: %{
-           "url" => url,
-           "session_start_limit" => %{
-             "max_concurrency" => max_concurrency,
-             "remaining" => remaining
-           }
-         }
-       }}
-      when is_binary(url) ->
-        parse_gateway(state.name, url, max_concurrency, remaining)
-
-      error ->
-        Utils.check_api_call_error(error)
-    end
-  end
-
-  @spec parse_gateway(atom(), String.t(), pos_integer(), non_neg_integer()) ::
-          {:ok, %{url: String.t(), max_concurrency: pos_integer()}}
-          | {:error, {:invalid_gateway_response, String.t()}}
-  defp parse_gateway(name, url, max_concurrency, remaining) do
-    with {:ok, max_concurrency} <- LawnBot.Utils.check_pos_int(max_concurrency),
-         {:ok, remaining} <- LawnBot.Utils.check_non_neg_int(remaining) do
-      workers = PersistentTerm.get({name, :workers})
-
-      if remaining < workers,
-        do: Logger.warning("Available sessions (#{remaining}) is lower than workers=#{workers}.")
-
-      gateway = %{url: url, max_concurrency: max_concurrency}
-      {:ok, gateway}
-    else
-      {:error, message} ->
-        {:error, {:invalid_gateway_response, message}}
-    end
-  end
+  defp fetch_gateway(access_token, state), do: API.fetch_gateway(state.name, access_token)
 
   @spec bootstrap(state()) :: {:noreply, state()} | {:noreply, state(), :hibernate}
   defp bootstrap(state) do
@@ -151,7 +86,12 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
 
     with {:ok, auth} <- fetch_auth(state),
          {:ok, gateway} <- fetch_gateway(auth.access_token, state) do
-      %{url: url, max_concurrency: max_concurrency} = gateway
+      %{url: url, max_concurrency: max_concurrency, remaining: remaining} = gateway
+      workers = PersistentTerm.get({name, :workers})
+
+      if remaining < workers,
+        do: Logger.warning("Available sessions (#{remaining}) is lower than workers=#{workers}.")
+
       TokenStore.put(name, auth.access_token)
       PersistentTerm.put({name, :gateway_url}, url)
       PersistentTerm.put({name, :max_concurrency}, max_concurrency)
@@ -238,8 +178,4 @@ defmodule LawnBot.Adapters.QQ.Coordinator do
         Logger.error("#{prefix} #{Utils.bot_name(name)}: #{message}")
     end
   end
-
-  # Generate the authorization token for API requests. It looks like "QQBot <access_token>".
-  @spec token(String.t()) :: String.t()
-  defp token(access_token), do: "QQBot #{access_token}"
 end
