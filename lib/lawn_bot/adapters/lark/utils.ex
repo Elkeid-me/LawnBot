@@ -1,31 +1,26 @@
 defmodule LawnBot.Adapters.Lark.Utils do
   @moduledoc false
 
-  @spec bot_name(module(), atom()) :: String.t()
-  def bot_name(adapter, name), do: "#{adapter.label()} Bot: #{name}"
+  @spec bot_name(String.t(), atom()) :: String.t()
+  def bot_name(label, name), do: "#{label} Bot: #{name}"
 
-  @spec worker_name(module(), atom(), pos_integer()) :: String.t()
-  def worker_name(adapter, name, index), do: "#{bot_name(adapter, name)} worker #{index}"
+  @spec worker_name(String.t(), atom(), pos_integer()) :: String.t()
+  def worker_name(label, name, index), do: "#{bot_name(label, name)} worker #{index}"
 
-  @spec adapter_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def adapter_via_tuple(adapter, name), do: via_tuple(adapter, name)
+  @spec supervisor_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
+  def supervisor_via_tuple(module, name), do: via_tuple(module, name)
 
   @spec coordinator_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def coordinator_via_tuple(adapter, name),
-    do: via_tuple(LawnBot.Adapters.Lark.BaseCoordinator, {adapter, name})
+  def coordinator_via_tuple(module, name), do: via_tuple(module, name)
 
-  @spec worker_via_tuple(module(), atom(), pos_integer()) ::
-          {:via, Registry, {module(), term()}}
-  def worker_via_tuple(adapter, name, index \\ 1),
-    do: via_tuple(LawnBot.Adapters.Lark.BaseWorker, {adapter, name, index})
+  @spec worker_via_tuple(module(), atom(), pos_integer()) :: {:via, Registry, {module(), term()}}
+  def worker_via_tuple(module, name, index), do: via_tuple(module, {name, index})
 
   @spec task_supervisor_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def task_supervisor_via_tuple(adapter, name),
-    do: via_tuple(LawnBot.Adapters.Lark.TaskSupervisor, {adapter, name})
+  def task_supervisor_via_tuple(module, name), do: via_tuple(module, name)
 
   @spec worker_supervisor_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def worker_supervisor_via_tuple(adapter, name),
-    do: via_tuple(LawnBot.Adapters.Lark.WorkerSupervisor, {adapter, name})
+  def worker_supervisor_via_tuple(module, name), do: via_tuple(module, name)
 
   defp via_tuple(module, key) do
     {:via, Registry, {LawnBot.AdapterRegistry, {module, key}}}

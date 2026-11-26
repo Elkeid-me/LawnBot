@@ -22,9 +22,9 @@ defmodule LawnBot.Adapters.Lark.Api do
   from the configured `:permissions`; when it is empty, the platform uses all
   application-identity scopes activated for the app in the tenant.
   """
-  @spec fetch_tenant_token(module(), atom()) ::
+  @spec fetch_tenant_token(String.t(), atom()) ::
           {:ok, %{access_token: String.t(), expires_in: pos_integer()}} | api_error()
-  def fetch_tenant_token(adapter, name) do
+  def fetch_tenant_token(token_url, name) do
     body = [
       grant_type: "client_credentials",
       client_id: PersistentTerm.get({name, :app_id}),
@@ -37,9 +37,7 @@ defmodule LawnBot.Adapters.Lark.Api do
         scopes -> Keyword.put(body, :scope, Enum.join(scopes, " "))
       end
 
-    url = adapter.accounts_url() <> "/oauth/v3/token"
-
-    case request(:post, url, form: body, finch: finch(name)) do
+    case request(:post, token_url, form: body, finch: finch(name)) do
       {:ok, body} ->
         with {:ok, access_token} <-
                Utils.check_empty_string(body["access_token"] || body["tenant_access_token"]),
@@ -58,7 +56,7 @@ defmodule LawnBot.Adapters.Lark.Api do
   @doc """
   Requests a WebSocket endpoint from the Lark/Feishu open platform.
   """
-  @spec fetch_ws_endpoint(module(), atom()) ::
+  @spec fetch_ws_endpoint(String.t(), atom()) ::
           {:ok,
            %{
              url: String.t(),
@@ -68,16 +66,14 @@ defmodule LawnBot.Adapters.Lark.Api do
              reconnect_interval: non_neg_integer()
            }}
           | api_error()
-  def fetch_ws_endpoint(adapter, name) do
+  def fetch_ws_endpoint(ws_endpoint_url, name) do
     body = %{
       "AppID" => PersistentTerm.get({name, :app_id}),
       "AppSecret" => PersistentTerm.get({name, :app_secret})
     }
 
-    url = adapter.base_url() <> "/callback/ws/endpoint"
-
     with {:ok, body} <-
-           request(:post, url,
+           request(:post, ws_endpoint_url,
              json: body,
              headers: %{"locale" => "zh"},
              finch: finch(name)
@@ -104,30 +100,30 @@ defmodule LawnBot.Adapters.Lark.Api do
   @doc """
   Sends a `LawnBot.Response` through the Lark/Feishu messaging API.
   """
-  @spec send_response(String.t(), atom(), String.t(), Response.t()) :: :ok | api_error()
-  def send_response(base_url, name, token, %Response{action: action} = response)
+  @spec send_response(map(), atom(), String.t(), Response.t()) :: :ok | api_error()
+  def send_response(urls, name, token, %Response{action: action} = response)
       when action in [:reply, :new_message] do
-    with {:ok, messages} <- build_messages(base_url, name, token, response) do
-      send_messages(base_url, name, token, response, messages)
+    with {:ok, messages} <- build_messages(urls, name, token, response) do
+      send_messages(urls, name, token, response, messages)
     end
   end
 
-  def send_response(_base_url, _name, _token, _response), do: :ok
+  def send_response(_urls, _name, _token, _response), do: :ok
 
-  defp send_messages(base_url, name, token, response, messages) do
+  defp send_messages(urls, name, token, response, messages) do
     Enum.reduce_while(messages, :ok, fn message, :ok ->
-      send_message_result(base_url, name, token, response, message)
+      send_message_result(urls, name, token, response, message)
     end)
   end
 
-  defp send_message_result(base_url, name, token, response, {msg_type, content}) do
-    case send_one(base_url, name, token, response, msg_type, content) do
+  defp send_message_result(urls, name, token, response, {msg_type, content}) do
+    case send_one(urls, name, token, response, msg_type, content) do
       :ok -> {:cont, :ok}
       {:error, _reason} = error -> {:halt, error}
     end
   end
 
-  defp build_messages(base_url, name, token, response) do
+  defp build_messages(urls, name, token, response) do
     text_messages =
       if is_binary(response.text) and response.text != "" do
         [{"text", JSON.encode!(%{"text" => response.text})}]
@@ -136,16 +132,16 @@ defmodule LawnBot.Adapters.Lark.Api do
       end
 
     with {:ok, attachment_messages} <-
-           build_attachment_messages(base_url, name, token, response.attachment) do
+           build_attachment_messages(urls, name, token, response.attachment) do
       {:ok, text_messages ++ attachment_messages}
     end
   end
 
-  defp build_attachment_messages(_base_url, _name, _token, nil), do: {:ok, []}
+  defp build_attachment_messages(_urls, _name, _token, nil), do: {:ok, []}
 
-  defp build_attachment_messages(base_url, name, token, attachment) do
+  defp build_attachment_messages(urls, name, token, attachment) do
     with {:ok, resolved} <- resolve_attachment(attachment, name),
-         {:ok, msg_type, key} <- upload_attachment(base_url, name, token, resolved) do
+         {:ok, msg_type, key} <- upload_attachment(urls, name, token, resolved) do
       content =
         case msg_type do
           "image" -> JSON.encode!(%{"image_key" => key})
@@ -156,26 +152,26 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp upload_attachment(base_url, name, token, %{
+  defp upload_attachment(urls, name, token, %{
          binary: binary,
          filename: filename,
          content_type: content_type
        }) do
     if image?(filename, content_type) do
-      upload_image_message(base_url, name, token, binary, filename, content_type)
+      upload_image_message(urls, name, token, binary, filename, content_type)
     else
-      upload_file_message(base_url, name, token, binary, filename, content_type)
+      upload_file_message(urls, name, token, binary, filename, content_type)
     end
   end
 
-  defp upload_image_message(base_url, name, token, binary, filename, content_type) do
-    with {:ok, key} <- upload_image(base_url, name, token, binary, filename, content_type) do
+  defp upload_image_message(urls, name, token, binary, filename, content_type) do
+    with {:ok, key} <- upload_image(urls, name, token, binary, filename, content_type) do
       {:ok, "image", key}
     end
   end
 
-  defp upload_file_message(base_url, name, token, binary, filename, content_type) do
-    with {:ok, key} <- upload_file(base_url, name, token, binary, filename, content_type) do
+  defp upload_file_message(urls, name, token, binary, filename, content_type) do
+    with {:ok, key} <- upload_file(urls, name, token, binary, filename, content_type) do
       {:ok, "file", key}
     end
   end
@@ -236,14 +232,14 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp upload_image(base_url, name, token, binary, filename, content_type) do
+  defp upload_image(urls, name, token, binary, filename, content_type) do
     fields = [
       image_type: "message",
       image: {binary, filename: filename, content_type: content_type || "application/octet-stream"}
     ]
 
     with {:ok, body} <-
-           request(:post, base_url <> "/open-apis/im/v1/images",
+           request(:post, urls.images,
              headers: auth_header(token),
              form_multipart: fields,
              finch: finch(name)
@@ -252,7 +248,7 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp upload_file(base_url, name, token, binary, filename, content_type) do
+  defp upload_file(urls, name, token, binary, filename, content_type) do
     fields = [
       file_type: "stream",
       file_name: filename,
@@ -260,7 +256,7 @@ defmodule LawnBot.Adapters.Lark.Api do
     ]
 
     with {:ok, body} <-
-           request(:post, base_url <> "/open-apis/im/v1/files",
+           request(:post, urls.files,
              headers: auth_header(token),
              form_multipart: fields,
              finch: finch(name)
@@ -269,13 +265,13 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp send_one(base_url, name, token, response, msg_type, content) do
+  defp send_one(urls, name, token, response, msg_type, content) do
     case_result =
       case response.action do
         :reply ->
           request(
             :post,
-            base_url <> "/open-apis/im/v1/messages/#{response.reply_message_id}/reply",
+            urls.messages <> "/" <> response.reply_message_id <> "/reply",
             headers: auth_header(token),
             json: %{"content" => content, "msg_type" => msg_type},
             finch: finch(name)
@@ -284,7 +280,7 @@ defmodule LawnBot.Adapters.Lark.Api do
         :new_message ->
           request(
             :post,
-            base_url <> "/open-apis/im/v1/messages",
+            urls.messages,
             params: [receive_id_type: "chat_id"],
             headers: auth_header(token),
             json: %{

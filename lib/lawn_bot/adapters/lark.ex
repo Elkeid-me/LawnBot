@@ -6,29 +6,28 @@ defmodule LawnBot.Adapters.Lark do
   adapter, with `https://open.larksuite.com` as the API base URL.
   """
 
-  @behaviour LawnBot.Adapter
+  use LawnBot.Adapters.Lark.Base,
+    open_api_url: "https://open.larksuite.com",
+    accounts_url: "https://accounts.larksuite.com",
+    coordinator: LawnBot.Adapters.Lark.Coordinator,
+    worker: LawnBot.Adapters.Lark.Worker,
+    label: "Lark"
+end
 
-  alias LawnBot.Adapters.Lark.Base
+defmodule LawnBot.Adapters.Lark.Coordinator do
+  @moduledoc false
 
-  @base_url "https://open.larksuite.com"
-  @accounts_url "https://accounts.larksuite.com"
-  @label "Lark"
+  use LawnBot.Adapters.Lark.BaseCoordinator,
+    accounts_url: "https://accounts.larksuite.com",
+    open_api_url: "https://open.larksuite.com",
+    label: "Lark",
+    worker: LawnBot.Adapters.Lark.Worker
+end
 
-  @spec base_url() :: String.t()
-  def base_url, do: @base_url
+defmodule LawnBot.Adapters.Lark.Worker do
+  @moduledoc false
 
-  @spec accounts_url() :: String.t()
-  def accounts_url, do: @accounts_url
-
-  @spec label() :: String.t()
-  def label, do: @label
-
-  @impl LawnBot.Adapter
-  def validate_options(opts), do: Base.validate_options(opts)
-
-  @spec start_link(Base.options()) :: Supervisor.on_start()
-  def start_link(opts), do: Base.start_link(opts, __MODULE__)
-
-  @spec child_spec(Base.options()) :: Supervisor.child_spec()
-  def child_spec(opts), do: Base.child_spec(opts, __MODULE__)
+  use LawnBot.Adapters.Lark.BaseWorker,
+    open_api_url: "https://open.larksuite.com",
+    label: "Lark"
 end

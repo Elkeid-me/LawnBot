@@ -1,8 +1,8 @@
 defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
   use ExUnit.Case, async: false
 
-  alias LawnBot.Adapters.Feishu
-  alias LawnBot.Adapters.Lark.BaseCoordinator
+  alias LawnBot.Adapters.Feishu.Coordinator
+  alias LawnBot.Adapters.Feishu.Worker
   alias LawnBot.Adapters.Lark.Utils
   alias LawnBot.TestReqStub
   alias LawnBot.TokenStore
@@ -52,7 +52,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
   end
 
   defp state do
-    %{adapter: Feishu, name: @bot, workers: 1, attempt_number: 0, refresh_ref: nil}
+    %{name: @bot, workers: 1, attempt_number: 0, refresh_ref: nil}
   end
 
   defp stub(path, body) do
@@ -64,23 +64,22 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
   test "initializes with an asynchronous bootstrap continuation" do
     expected = state()
 
-    assert {:ok, ^expected, {:continue, :bootstrap}} = BaseCoordinator.init({Feishu, @bot})
+    assert {:ok, ^expected, {:continue, :bootstrap}} = Coordinator.init({@bot, 1})
 
-    assert {:ok, %{workers: 3}, {:continue, :bootstrap}} =
-             BaseCoordinator.init({Feishu, @bot, 3})
+    assert {:ok, %{workers: 3}, {:continue, :bootstrap}} = Coordinator.init({@bot, 3})
   end
 
-  test "builds its registry name per adapter and bot" do
-    assert {:via, Registry, {LawnBot.AdapterRegistry, {BaseCoordinator, {Feishu, @bot}}}} =
-             BaseCoordinator.via_tuple(Feishu, @bot)
+  test "builds its registry name per platform module and bot" do
+    assert {:via, Registry, {LawnBot.AdapterRegistry, {Coordinator, @bot}}} =
+             Coordinator.via_tuple(@bot)
   end
 
-  test "starts one worker per configured worker count" do
+  test "starts the configured number of workers" do
     start_registry()
 
     start_supervised!(
       {DynamicSupervisor,
-       strategy: :one_for_one, name: Utils.worker_supervisor_via_tuple(Feishu, @bot)}
+       strategy: :one_for_one, name: Utils.worker_supervisor_via_tuple(Worker, @bot)}
     )
 
     endpoint_requests = :counters.new(1, [])
@@ -108,13 +107,13 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
     end)
 
     assert {:noreply, updated, :hibernate} =
-             BaseCoordinator.handle_continue(:bootstrap, %{state() | workers: 3})
+             Coordinator.handle_continue(:bootstrap, %{state() | workers: 3})
 
     assert :counters.get(endpoint_requests, 1) == 3
     assert TokenStore.get(@bot) == "t-token"
 
     assert %{active: 3} =
-             DynamicSupervisor.count_children(Utils.worker_supervisor_via_tuple(Feishu, @bot))
+             DynamicSupervisor.count_children(Utils.worker_supervisor_via_tuple(Worker, @bot))
 
     Process.cancel_timer(updated.refresh_ref)
   end
@@ -122,7 +121,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
   test "refreshes and stores the tenant access token" do
     stub(@token_path, %{"code" => 0, "access_token" => "t-new-token", "expires_in" => 7200})
 
-    assert {:noreply, updated} = BaseCoordinator.handle_info(:refresh_token, state())
+    assert {:noreply, updated} = Coordinator.handle_info(:refresh_token, state())
     assert TokenStore.get(@bot) == "t-new-token"
     assert updated.attempt_number == 0
     assert is_reference(updated.refresh_ref)
@@ -133,7 +132,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
   test "schedules the refresh before the token expires" do
     stub(@token_path, %{"code" => 0, "access_token" => "t-new-token", "expires_in" => 60})
 
-    assert {:noreply, updated} = BaseCoordinator.handle_info(:refresh_token, state())
+    assert {:noreply, updated} = Coordinator.handle_info(:refresh_token, state())
 
     remaining = Process.read_timer(updated.refresh_ref)
     assert remaining > 0 and remaining <= 1_000
@@ -146,7 +145,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
     coordinator_state = %{state() | attempt_number: 2}
 
     assert {:noreply, updated} =
-             BaseCoordinator.handle_info(:refresh_token, coordinator_state)
+             Coordinator.handle_info(:refresh_token, coordinator_state)
 
     assert updated.attempt_number == 3
     assert is_reference(updated.refresh_ref)
@@ -159,7 +158,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
     stub(@token_path, %{"code" => 10_003, "msg" => "invalid app_secret"})
 
     assert {:noreply, updated} =
-             BaseCoordinator.handle_continue(:bootstrap, state())
+             Coordinator.handle_continue(:bootstrap, state())
 
     assert updated.attempt_number == 1
     assert updated.refresh_ref == nil
@@ -170,7 +169,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
     stub(@endpoint_path, %{"code" => 1, "msg" => "system busy"})
 
     assert {:noreply, updated} =
-             BaseCoordinator.handle_continue(:bootstrap, state())
+             Coordinator.handle_continue(:bootstrap, state())
 
     assert updated.attempt_number == 1
     assert updated.refresh_ref == nil
@@ -180,6 +179,6 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinatorTest do
     coordinator_state = state()
 
     assert {:noreply, ^coordinator_state} =
-             BaseCoordinator.handle_info(:unrelated, coordinator_state)
+             Coordinator.handle_info(:unrelated, coordinator_state)
   end
 end

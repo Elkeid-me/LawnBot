@@ -1,12 +1,11 @@
 defmodule LawnBot.Adapters.Lark.EventProcessTest do
   use ExUnit.Case, async: true
 
+  alias LawnBot.Adapters.Feishu
   alias LawnBot.Adapters.Lark.EventProcess
   alias LawnBot.Attachment
   alias LawnBot.Event
   alias LawnBot.Event.Content
-
-  @base_url "https://open.feishu.cn"
 
   defp payload(
          event_type \\ "im.message.receive_v1",
@@ -35,7 +34,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
   end
 
   test "converts a group text message" do
-    assert {:ok, %Event{} = event} = EventProcess.to_event(payload(), @base_url)
+    assert {:ok, %Event{} = event} = EventProcess.to_event(payload(), Feishu.messages_url())
 
     assert event.author_id == "ou-user"
     assert event.content == "hello"
@@ -47,26 +46,29 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
 
   test "converts a p2p text message" do
     assert {:ok, %Event{session_type: :c2c, session_id: "oc-chat"}} =
-             EventProcess.to_event(payload("im.message.receive_v1", "p2p"), @base_url)
+             EventProcess.to_event(payload("im.message.receive_v1", "p2p"), Feishu.messages_url())
   end
 
   test "ignores app-authored messages" do
     assert :ignore =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "text", "{}", "app"),
-               @base_url
+               Feishu.messages_url()
              )
 
     assert :ignore =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "text", "{}", "bot"),
-               @base_url
+               Feishu.messages_url()
              )
   end
 
   test "ignores other event types and unsupported chat types" do
-    assert :ignore = EventProcess.to_event(payload("im.message.reaction.created_v1"), @base_url)
-    assert :ignore = EventProcess.to_event(payload("im.message.receive_v1", "topic"), @base_url)
+    assert :ignore =
+             EventProcess.to_event(payload("im.message.reaction.created_v1"), Feishu.messages_url())
+
+    assert :ignore =
+             EventProcess.to_event(payload("im.message.receive_v1", "topic"), Feishu.messages_url())
   end
 
   test "ignores messages without a chat id" do
@@ -76,7 +78,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
     event_payload =
       put_in(event_payload, ["event", "message"], Map.delete(message, "chat_id"))
 
-    assert :ignore = EventProcess.to_event(event_payload, @base_url)
+    assert :ignore = EventProcess.to_event(event_payload, Feishu.messages_url())
   end
 
   test "extracts image attachments" do
@@ -85,7 +87,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
     assert {:ok, %Event{content: %Content{text: nil, attachments: [attachment]}}} =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "image", content),
-               @base_url
+               Feishu.messages_url()
              )
 
     assert %Attachment{
@@ -100,7 +102,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
     assert {:ok, %Event{content: %Content{attachments: [attachment]}}} =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "file", content),
-               @base_url
+               Feishu.messages_url()
              )
 
     assert %Attachment{
@@ -130,7 +132,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
     assert {:ok, %Event{content: %Content{text: "Title\nhello link", attachments: [attachment]}}} =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "post", content),
-               @base_url
+               Feishu.messages_url()
              )
 
     assert attachment.url =~ "img-2"
@@ -140,13 +142,13 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
     assert {:ok, %Event{content: nil}} =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "unknown", "{}"),
-               @base_url
+               Feishu.messages_url()
              )
 
     assert {:ok, %Event{content: nil}} =
              EventProcess.to_event(
                payload("im.message.receive_v1", "group", "text", "not-json"),
-               @base_url
+               Feishu.messages_url()
              )
   end
 end

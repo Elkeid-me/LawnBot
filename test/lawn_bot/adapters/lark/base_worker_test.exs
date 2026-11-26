@@ -1,8 +1,7 @@
 defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   use ExUnit.Case, async: false
 
-  alias LawnBot.Adapters.Feishu
-  alias LawnBot.Adapters.Lark.BaseWorker
+  alias LawnBot.Adapters.Feishu.Worker
   alias LawnBot.Adapters.Lark.Frame
   alias LawnBot.Adapters.Lark.Utils
   alias LawnBot.Response
@@ -55,12 +54,9 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   end
 
   defp start_task_supervisor do
-    name = Utils.task_supervisor_via_tuple(Feishu, @bot)
+    name = Utils.task_supervisor_via_tuple(Worker, @bot)
 
-    case Registry.lookup(
-           LawnBot.AdapterRegistry,
-           {LawnBot.Adapters.Lark.TaskSupervisor, {Feishu, @bot}}
-         ) do
+    case Registry.lookup(LawnBot.AdapterRegistry, {Worker, @bot}) do
       [] -> start_supervised!({Task.Supervisor, name: name})
       _pids -> :ok
     end
@@ -68,8 +64,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
 
   defp state(overrides \\ []) do
     struct!(
-      %BaseWorker{
-        adapter: Feishu,
+      %Worker{
         name: @bot,
         url: "wss://msg.example.com/ws?service_id=42",
         service_id: 42,
@@ -119,7 +114,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = data_frame(JSON.encode!(event_payload()))
 
     assert {:reply, {:binary, ack_binary}, _updated} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
+             Worker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     {ack, body} = ack_body(ack_binary)
 
@@ -144,7 +139,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = data_frame("{}", %{"type" => "card"})
 
     assert {:reply, {:binary, ack_binary}, _updated} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
+             Worker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     {_ack, body} = ack_body(ack_binary)
     assert body["code"] == 200
@@ -171,13 +166,13 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
       data_frame(second, %{"type" => "event", "message_id" => "frag-1", "sum" => "2", "seq" => "1"})
 
     assert {:reply, {:binary, _ack}, state_after_first} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(first_frame)}, state())
+             Worker.handle_frame({:binary, Frame.encode_frame(first_frame)}, state())
 
     refute_receive {:handled, _event}, 100
     assert map_size(state_after_first.fragments) == 1
 
     assert {:reply, {:binary, _ack}, state_after_second} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(second_frame)}, state_after_first)
+             Worker.handle_frame({:binary, Frame.encode_frame(second_frame)}, state_after_first)
 
     assert state_after_second.fragments == %{}
     assert_receive {:handled, %LawnBot.Event{content: "hello"}}, 2_000
@@ -192,7 +187,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     }
 
     assert {:ok, updated} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
+             Worker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     assert updated.ping_interval == 30_000
     assert is_reference(updated.ping_ref)
@@ -203,7 +198,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   test "sends a ping and schedules the next heartbeat" do
     shard_state = state()
 
-    assert {:reply, {:binary, ping_binary}, updated} = BaseWorker.handle_info(:ping, shard_state)
+    assert {:reply, {:binary, ping_binary}, updated} = Worker.handle_info(:ping, shard_state)
     assert {:ok, ping} = Frame.decode_frame(ping_binary)
 
     assert ping.method == 0
@@ -224,7 +219,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
         last_frame_at: now - 10_000
       )
 
-    assert {:close, _state} = BaseWorker.handle_info(:ping, stale)
+    assert {:close, _state} = Worker.handle_info(:ping, stale)
   end
 
   test "replies to a server ping" do
@@ -236,7 +231,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     }
 
     assert {:reply, {:binary, pong_binary}, _state} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
+             Worker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     assert {:ok, pong} = Frame.decode_frame(pong_binary)
     assert Frame.get_header(pong, "type") == "pong"
@@ -247,7 +242,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     connected =
       state(ping_ref: Process.send_after(self(), :old_ping, 10_000))
 
-    assert {:ok, updated} = BaseWorker.handle_connect(:conn, connected)
+    assert {:ok, updated} = Worker.handle_connect(:conn, connected)
     assert updated.ping_ref == nil
     assert updated.last_frame_at != 0
     assert_receive :ping, 100
@@ -257,10 +252,10 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     shard_state = state()
 
     assert {:ok, updated} =
-             BaseWorker.handle_frame({:binary, "not-protobuf"}, shard_state)
+             Worker.handle_frame({:binary, "not-protobuf"}, shard_state)
 
     assert updated.last_frame_at != 0
-    assert {:ok, ^shard_state} = BaseWorker.handle_frame({:text, "text"}, shard_state)
+    assert {:ok, ^shard_state} = Worker.handle_frame({:text, "text"}, shard_state)
   end
 
   test "sends a response from the handler" do
@@ -283,7 +278,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
     frame = data_frame(JSON.encode!(event_payload()))
 
     assert {:reply, {:binary, _ack}, _updated} =
-             BaseWorker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
+             Worker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
 
     assert_receive {:request, request}, 2_000
     body = request.body |> IO.iodata_to_binary() |> JSON.decode!()

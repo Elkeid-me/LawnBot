@@ -1,193 +1,202 @@
 defmodule LawnBot.Adapters.Lark.BaseCoordinator do
   @moduledoc """
-  Bootstraps a Lark/Feishu bot: obtains the tenant access token, then requests
-  one WebSocket endpoint per configured connection and starts the workers.
+  Generates a platform-specific coordinator.
 
-  Lark/Feishu long connections are clustered: with multiple workers, each
-  event is delivered to one randomly selected worker. There is no sharding
-  or local event routing.
+  API URLs and the worker module are compile-time constants. No adapter or URL
+  strings are threaded through the GenServer state at runtime.
   """
 
-  use GenServer
+  defmacro __using__(opts) do
+    accounts_url = Keyword.fetch!(opts, :accounts_url)
+    open_api_url = Keyword.fetch!(opts, :open_api_url)
+    label = Keyword.fetch!(opts, :label)
+    worker = Macro.expand(Keyword.fetch!(opts, :worker), __CALLER__)
 
-  alias LawnBot.Adapters.Lark.Api
-  alias LawnBot.Adapters.Lark.BaseWorker
-  alias LawnBot.Adapters.Lark.Utils
-  alias LawnBot.TokenStore
+    token_url = "#{accounts_url}/oauth/v3/token"
+    ws_endpoint_url = "#{open_api_url}/callback/ws/endpoint"
 
-  require Logger
+    # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
+    quote bind_quoted: [
+            accounts_url: accounts_url,
+            open_api_url: open_api_url,
+            label: label,
+            worker: worker,
+            token_url: token_url,
+            ws_endpoint_url: ws_endpoint_url
+          ] do
+      use GenServer
 
-  @token_refresh_margin 60
+      alias LawnBot.Adapters.Lark.Api
+      alias LawnBot.Adapters.Lark.Utils
+      alias LawnBot.TokenStore
 
-  @type state() :: %{
-          adapter: module(),
-          name: atom(),
-          workers: pos_integer(),
-          attempt_number: non_neg_integer(),
-          refresh_ref: reference() | nil
-        }
+      require Logger
 
-  @spec start_link({module(), atom()} | {module(), atom(), pos_integer()}) ::
-          GenServer.on_start()
-  def start_link({adapter, name}), do: start_link({adapter, name, 1})
+      @label label
+      @worker_module worker
+      @token_url token_url
+      @ws_endpoint_url ws_endpoint_url
+      @token_refresh_margin 60
 
-  def start_link({adapter, name, workers}) do
-    GenServer.start_link(
-      __MODULE__,
-      {adapter, name, workers},
-      name: via_tuple(adapter, name)
-    )
-  end
+      @type state() :: %{
+              name: atom(),
+              workers: pos_integer(),
+              attempt_number: non_neg_integer(),
+              refresh_ref: reference() | nil
+            }
 
-  @spec via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def via_tuple(adapter, name), do: Utils.coordinator_via_tuple(adapter, name)
+      @spec start_link({atom(), pos_integer()}) :: GenServer.on_start()
+      def start_link({name, workers}) do
+        GenServer.start_link(__MODULE__, {name, workers}, name: via_tuple(name))
+      end
 
-  @impl GenServer
-  @spec init({module(), atom()} | {module(), atom(), pos_integer()}) ::
-          {:ok, state(), {:continue, :bootstrap}}
-  def init({adapter, name}), do: init({adapter, name, 1})
+      @spec via_tuple(atom()) :: {:via, Registry, {module(), term()}}
+      def via_tuple(name), do: Utils.coordinator_via_tuple(__MODULE__, name)
 
-  def init({adapter, name, workers}) do
-    {:ok,
-     %{
-       adapter: adapter,
-       name: name,
-       workers: workers,
-       attempt_number: 0,
-       refresh_ref: nil
-     }, {:continue, :bootstrap}}
-  end
+      @impl GenServer
+      @spec init({atom(), pos_integer()}) :: {:ok, state(), {:continue, :bootstrap}}
+      def init({name, workers}) do
+        {:ok,
+         %{
+           name: name,
+           workers: workers,
+           attempt_number: 0,
+           refresh_ref: nil
+         }, {:continue, :bootstrap}}
+      end
 
-  @impl GenServer
-  def handle_continue(:bootstrap, state), do: bootstrap(state)
-  def handle_continue(_continue, state), do: {:noreply, state}
+      @impl GenServer
+      def handle_continue(:bootstrap, state), do: bootstrap(state)
+      def handle_continue(_continue, state), do: {:noreply, state}
 
-  @impl GenServer
-  def handle_info(:bootstrap, state), do: bootstrap(state)
-  def handle_info(:refresh_token, state), do: refresh_token(state)
-  def handle_info(_message, state), do: {:noreply, state}
+      @impl GenServer
+      def handle_info(:bootstrap, state), do: bootstrap(state)
+      def handle_info(:refresh_token, state), do: refresh_token(state)
+      def handle_info(_message, state), do: {:noreply, state}
 
-  defp bootstrap(state) do
-    %{adapter: adapter, name: name, workers: workers} = state
+      defp bootstrap(state) do
+        %{name: name, workers: workers} = state
 
-    case Api.fetch_tenant_token(adapter, name) do
-      {:ok, auth} ->
-        TokenStore.put(name, auth.access_token)
+        case Api.fetch_tenant_token(@token_url, name) do
+          {:ok, auth} ->
+            TokenStore.put(name, auth.access_token)
 
-        case start_workers(adapter, name, workers) do
-          :ok ->
-            state = schedule_token_refresh(%{state | attempt_number: 0}, auth.expires_in)
-            {:noreply, state, :hibernate}
+            case start_workers(name, workers) do
+              :ok ->
+                state = schedule_token_refresh(%{state | attempt_number: 0}, auth.expires_in)
+                {:noreply, state, :hibernate}
+
+              {:error, error} ->
+                log_failure("Failed to start workers for", name, error)
+                retry_bootstrap(state)
+            end
 
           {:error, error} ->
-            log_failure("Failed to start workers for", adapter, name, error)
+            log_failure("Failed to bootstrap", name, error)
             retry_bootstrap(state)
         end
+      end
 
-      {:error, error} ->
-        log_failure("Failed to bootstrap", adapter, name, error)
-        retry_bootstrap(state)
-    end
-  end
-
-  defp retry_bootstrap(state) do
-    state = %{state | attempt_number: state.attempt_number + 1}
-    Process.send_after(self(), :bootstrap, LawnBot.Utils.exp_backoff(state.attempt_number))
-    {:noreply, state}
-  end
-
-  defp refresh_token(state) do
-    %{adapter: adapter, name: name} = state
-
-    case Api.fetch_tenant_token(adapter, name) do
-      {:ok, auth} ->
-        Logger.info("Refreshed token for #{Utils.bot_name(adapter, name)}")
-        TokenStore.put(name, auth.access_token)
-
-        {:noreply, schedule_token_refresh(%{state | attempt_number: 0}, auth.expires_in)}
-
-      {:error, error} ->
-        log_failure("Failed to refresh token for", adapter, name, error)
+      defp retry_bootstrap(state) do
         state = %{state | attempt_number: state.attempt_number + 1}
-        delay = LawnBot.Utils.exp_backoff(state.attempt_number)
-        timer = Process.send_after(self(), :refresh_token, delay)
-        {:noreply, %{state | refresh_ref: timer}}
-    end
-  end
-
-  defp schedule_token_refresh(state, expires_in) do
-    state =
-      case state.refresh_ref do
-        nil ->
-          state
-
-        ref ->
-          Process.cancel_timer(ref)
-          %{state | refresh_ref: nil}
+        Process.send_after(self(), :bootstrap, LawnBot.Utils.exp_backoff(state.attempt_number))
+        {:noreply, state}
       end
 
-    delay = max((expires_in - @token_refresh_margin) * 1_000, 1_000)
-    %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
-  end
+      defp refresh_token(state) do
+        %{name: name} = state
 
-  defp start_workers(adapter, name, workers) do
-    Enum.reduce_while(1..workers, :ok, fn index, :ok ->
-      with {:ok, endpoint} <- Api.fetch_ws_endpoint(adapter, name),
-           :ok <- start_worker(adapter, name, index, endpoint) do
-        {:cont, :ok}
-      else
-        {:error, error} -> {:halt, {:error, error}}
+        case Api.fetch_tenant_token(@token_url, name) do
+          {:ok, auth} ->
+            Logger.info("Refreshed token for #{Utils.bot_name(@label, name)}")
+            TokenStore.put(name, auth.access_token)
+
+            {:noreply, schedule_token_refresh(%{state | attempt_number: 0}, auth.expires_in)}
+
+          {:error, error} ->
+            log_failure("Failed to refresh token for", name, error)
+            state = %{state | attempt_number: state.attempt_number + 1}
+            delay = LawnBot.Utils.exp_backoff(state.attempt_number)
+            timer = Process.send_after(self(), :refresh_token, delay)
+            {:noreply, %{state | refresh_ref: timer}}
+        end
       end
-    end)
-  end
 
-  defp start_worker(adapter, name, index, endpoint) do
-    worker_state = %BaseWorker{
-      adapter: adapter,
-      name: name,
-      index: index,
-      url: endpoint.url,
-      service_id: endpoint.service_id,
-      ping_interval: endpoint.ping_interval
-    }
+      defp schedule_token_refresh(state, expires_in) do
+        state =
+          case state.refresh_ref do
+            nil ->
+              state
 
-    case DynamicSupervisor.start_child(
-           Utils.worker_supervisor_via_tuple(adapter, name),
-           {BaseWorker, worker_state}
-         ) do
-      {:ok, _pid} ->
-        :ok
+            ref ->
+              Process.cancel_timer(ref)
+              %{state | refresh_ref: nil}
+          end
 
-      {:error, {:already_started, _pid}} ->
-        :ok
+        delay = max((expires_in - @token_refresh_margin) * 1_000, 1_000)
+        %{state | refresh_ref: Process.send_after(self(), :refresh_token, delay)}
+      end
 
-      {:error, reason} ->
-        Logger.error(
-          "Failed to start #{Utils.worker_name(adapter, name, index)}: #{inspect(reason)}"
-        )
+      defp start_workers(name, workers) do
+        Enum.reduce_while(1..workers, :ok, fn index, :ok ->
+          with {:ok, endpoint} <- Api.fetch_ws_endpoint(@ws_endpoint_url, name),
+               :ok <- start_worker(name, index, endpoint) do
+            {:cont, :ok}
+          else
+            {:error, error} -> {:halt, {:error, error}}
+          end
+        end)
+      end
 
-        {:error, reason}
-    end
-  end
+      defp start_worker(name, index, endpoint) do
+        worker_state =
+          struct(@worker_module,
+            name: name,
+            index: index,
+            url: endpoint.url,
+            service_id: endpoint.service_id,
+            ping_interval: endpoint.ping_interval
+          )
 
-  defp log_failure(prefix, adapter, name, error) do
-    bot_name = Utils.bot_name(adapter, name)
+        case DynamicSupervisor.start_child(
+               Utils.worker_supervisor_via_tuple(@worker_module, name),
+               {@worker_module, worker_state}
+             ) do
+          {:ok, _pid} ->
+            :ok
 
-    case error do
-      {:lark_api, http_status, code, message} ->
-        Logger.error("#{prefix} #{bot_name}: HTTP #{http_status}, #{inspect(code)}, #{message}")
+          {:error, {:already_started, _pid}} ->
+            :ok
 
-      {:unexpected_response, http_status, response} ->
-        Logger.error("#{prefix} #{bot_name}: HTTP #{http_status}, #{inspect(response)}")
+          {:error, reason} ->
+            Logger.error(
+              "Failed to start #{Utils.worker_name(@label, name, index)}: #{inspect(reason)}"
+            )
 
-      {:invalid_field_type, message} ->
-        Logger.error("#{prefix} #{bot_name}: invalid_field_type: #{message}")
+            {:error, reason}
+        end
+      end
 
-      message when is_binary(message) ->
-        Logger.error("#{prefix} #{bot_name}: #{message}")
+      defp log_failure(prefix, name, error) do
+        bot_name = Utils.bot_name(@label, name)
 
-      other ->
-        Logger.error("#{prefix} #{bot_name}: #{inspect(other)}")
+        case error do
+          {:lark_api, http_status, code, message} ->
+            Logger.error("#{prefix} #{bot_name}: HTTP #{http_status}, #{inspect(code)}, #{message}")
+
+          {:unexpected_response, http_status, response} ->
+            Logger.error("#{prefix} #{bot_name}: HTTP #{http_status}, #{inspect(response)}")
+
+          {:invalid_field_type, message} ->
+            Logger.error("#{prefix} #{bot_name}: invalid_field_type: #{message}")
+
+          message when is_binary(message) ->
+            Logger.error("#{prefix} #{bot_name}: #{message}")
+
+          other ->
+            Logger.error("#{prefix} #{bot_name}: #{inspect(other)}")
+        end
+      end
     end
   end
 end

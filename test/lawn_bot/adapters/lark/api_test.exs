@@ -78,7 +78,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
       end)
 
       assert {:ok, %{access_token: "t-token", expires_in: 7200}} =
-               Api.fetch_tenant_token(Feishu, @bot)
+               Api.fetch_tenant_token(Feishu.token_url(), @bot)
     end
 
     test "sends configured permissions as the OAuth scope" do
@@ -94,14 +94,14 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         token_response()
       end)
 
-      assert {:ok, %{access_token: "t-token"}} = Api.fetch_tenant_token(Feishu, @bot)
+      assert {:ok, %{access_token: "t-token"}} = Api.fetch_tenant_token(Feishu.token_url(), @bot)
     end
 
     test "rejects a missing token" do
       stub(@token_path, response(%{"code" => 0, "expires_in" => 7200}))
 
       assert {:error, {:invalid_field_type, _message}} =
-               Api.fetch_tenant_token(Feishu, @bot)
+               Api.fetch_tenant_token(Feishu.token_url(), @bot)
     end
 
     test "maps OAuth errors" do
@@ -118,7 +118,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
       )
 
       assert {:error, {:lark_api, 400, 20_002, "The client secret is invalid."}} =
-               Api.fetch_tenant_token(Feishu, @bot)
+               Api.fetch_tenant_token(Feishu.token_url(), @bot)
     end
   end
 
@@ -140,7 +140,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         })
       end)
 
-      assert {:ok, endpoint} = Api.fetch_ws_endpoint(Feishu, @bot)
+      assert {:ok, endpoint} = Api.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
       assert endpoint.url =~ "wss://msg.example.com/ws"
       assert endpoint.service_id == 1234
       assert endpoint.ping_interval == 60_000
@@ -152,7 +152,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
       stub(@endpoint_path, response(%{"code" => 0, "data" => %{}}))
 
       assert {:error, {:invalid_field_type, _message}} =
-               Api.fetch_ws_endpoint(Feishu, @bot)
+               Api.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
     end
   end
 
@@ -178,7 +178,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         text: "hello"
       }
 
-      assert :ok = Api.send_response(Feishu.base_url(), @bot, "t-token", reply)
+      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "replies to a message" do
@@ -199,7 +199,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         text: "pong"
       }
 
-      assert :ok = Api.send_response(Feishu.base_url(), @bot, "t-token", reply)
+      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "uploads an image before sending it" do
@@ -229,7 +229,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         attachment: {:path, path}
       }
 
-      assert :ok = Api.send_response(Feishu.base_url(), @bot, "t-token", reply)
+      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "uploads a binary as a file" do
@@ -254,7 +254,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         attachment: {:binary, "binary-data"}
       }
 
-      assert :ok = Api.send_response(Feishu.base_url(), @bot, "t-token", reply)
+      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "downloads URL attachments before uploading them" do
@@ -280,12 +280,12 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         attachment: {:url, "https://example.com/remote/image.png"}
       }
 
-      assert :ok = Api.send_response(Feishu.base_url(), @bot, "t-token", reply)
+      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "ignores actions that do not send messages" do
       assert :ok =
-               Api.send_response(Feishu.base_url(), @bot, "t-token", %Response{action: :ignore})
+               Api.send_response(Feishu.api_urls(), @bot, "t-token", %Response{action: :ignore})
 
       refute_receive {:stub_request, _path, _request}, 50
     end

@@ -1,5 +1,7 @@
 defmodule LawnBot.Adapters.Lark.Frame.Header do
-  @moduledoc false
+  @moduledoc """
+  A key/value header in a `pbbp2.Frame`.
+  """
 
   use Protobuf, syntax: :proto2
 

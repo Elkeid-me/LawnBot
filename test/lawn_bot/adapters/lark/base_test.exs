@@ -3,8 +3,8 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
 
   alias LawnBot.Adapters.Feishu
   alias LawnBot.Adapters.Lark
-  alias LawnBot.Adapters.Lark.BaseCoordinator
-  alias LawnBot.Adapters.Lark.BaseWorker
+  alias LawnBot.Adapters.Lark.Coordinator
+  alias LawnBot.Adapters.Lark.Worker
 
   @moduletag capture_log: true
 
@@ -26,13 +26,28 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     :ok
   end
 
-  test "both adapters expose their API base URL, accounts URL and label" do
+  test "both adapters expose their API URLs and label" do
     assert Lark.base_url() == "https://open.larksuite.com"
     assert Lark.accounts_url() == "https://accounts.larksuite.com"
+    assert Lark.token_url() == "https://accounts.larksuite.com/oauth/v3/token"
+    assert Lark.ws_endpoint_url() == "https://open.larksuite.com/callback/ws/endpoint"
+    assert Lark.messages_url() == "https://open.larksuite.com/open-apis/im/v1/messages"
+    assert Lark.upload_image_url() == "https://open.larksuite.com/open-apis/im/v1/images"
+    assert Lark.upload_file_url() == "https://open.larksuite.com/open-apis/im/v1/files"
+    assert Lark.reply_message_url("om-1") =~ "/open-apis/im/v1/messages/om-1/reply"
+    assert Lark.message_resource_url("om-1", "key", "image") =~ "?type=image"
     assert Lark.label() == "Lark"
+    assert Lark.coordinator_module() == Coordinator
+    assert Lark.worker_module() == Worker
+
     assert Feishu.base_url() == "https://open.feishu.cn"
     assert Feishu.accounts_url() == "https://accounts.feishu.cn"
+    assert Feishu.token_url() == "https://accounts.feishu.cn/oauth/v3/token"
+    assert Feishu.ws_endpoint_url() == "https://open.feishu.cn/callback/ws/endpoint"
+    assert Feishu.messages_url() == "https://open.feishu.cn/open-apis/im/v1/messages"
     assert Feishu.label() == "Feishu"
+    assert Feishu.coordinator_module() == Feishu.Coordinator
+    assert Feishu.worker_module() == Feishu.Worker
   end
 
   test "validates options with a default handler and no explicit scopes" do
@@ -86,23 +101,20 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert {:ok, opts} = Lark.validate_options(@options)
 
     assert {:ok, {%{strategy: :rest_for_one, intensity: 3, period: 30}, children}} =
-             LawnBot.Adapters.Lark.Base.init(Keyword.put(opts, :adapter, Lark))
+             Lark.init(opts)
 
     assert length(children) == 4
 
-    assert %{id: {LawnBot.AdapterRegistry, {LawnBot.Adapters.Lark.TaskSupervisor, {Lark, @bot}}}} =
-             Enum.at(children, 0)
+    assert %{id: {LawnBot.AdapterRegistry, {Worker, @bot}}} = Enum.at(children, 0)
 
     assert %{id: {Finch.Pool.Supervisor, _pool_name}, start: {Finch.Pool.Supervisor, _, _}} =
              Enum.at(children, 1)
 
     assert_pool_size(Enum.at(children, 1), 16)
 
-    assert %{
-             id: {LawnBot.AdapterRegistry, {LawnBot.Adapters.Lark.WorkerSupervisor, {Lark, @bot}}}
-           } = Enum.at(children, 2)
+    assert %{id: {LawnBot.AdapterRegistry, {Worker, @bot}}} = Enum.at(children, 2)
 
-    assert %{id: BaseCoordinator, start: {BaseCoordinator, :start_link, [{Lark, @bot, 1}]}} =
+    assert %{id: Coordinator, start: {Coordinator, :start_link, [{@bot, 1}]}} =
              Enum.at(children, 3)
 
     assert :persistent_term.get({@bot, :app_id}) == "cli-app"
@@ -115,14 +127,14 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert {:ok, opts} = Lark.validate_options(Keyword.put(@options, :workers, 3))
 
     assert {:ok, {_flags, children}} =
-             LawnBot.Adapters.Lark.Base.init(Keyword.put(opts, :adapter, Lark))
+             Lark.init(opts)
 
     assert_pool_size(Enum.at(children, 1), 48)
   end
 
   test "the stored handler delegates to the configured module" do
     assert {:ok, opts} = Lark.validate_options(@options)
-    assert {:ok, _spec} = LawnBot.Adapters.Lark.Base.init(Keyword.put(opts, :adapter, Lark))
+    assert {:ok, _spec} = Lark.init(opts)
 
     handler = :persistent_term.get(@bot)
 
@@ -136,15 +148,15 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert %LawnBot.Response{action: :reply, text: "hello"} = handler.(event)
   end
 
-  test "the worker child spec is keyed by adapter, bot name and connection" do
-    worker = %BaseWorker{adapter: Lark, name: @bot, url: "wss://example.com/ws", service_id: 1}
+  test "the worker child spec is keyed by worker module, bot name and index" do
+    worker = %Worker{name: @bot, url: "wss://example.com/ws", service_id: 1}
     second = %{worker | index: 2}
 
-    assert %{id: {BaseWorker, Lark, @bot, 1}, start: {BaseWorker, :start_link, [^worker]}} =
-             BaseWorker.child_spec(worker)
+    assert %{id: {Worker, @bot, 1}, start: {Worker, :start_link, [^worker]}} =
+             Worker.child_spec(worker)
 
-    assert %{id: {BaseWorker, Lark, @bot, 2}, start: {BaseWorker, :start_link, [^second]}} =
-             BaseWorker.child_spec(second)
+    assert %{id: {Worker, @bot, 2}, start: {Worker, :start_link, [^second]}} =
+             Worker.child_spec(second)
   end
 
   defp assert_pool_size(pool_spec, expected_size) do
@@ -152,8 +164,7 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
              start:
                {Finch.Pool.Supervisor, :start_link,
                 [
-                  {{:via, Registry,
-                    {_registry, _pool_name, {_mod, _count, %{size: ^expected_size}}}},
+                  {{:via, Registry, {_registry, _pool_name, {_mod, _count}}},
                    {LawnBot.Finch, %Finch.Pool{}, %{size: ^expected_size}, false}}
                 ]}
            } = pool_spec
