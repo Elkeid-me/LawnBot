@@ -1,14 +1,14 @@
-defmodule LawnBot.Adapters.Lark.ApiTest do
+defmodule LawnBot.Adapters.Lark.APITest do
   use ExUnit.Case, async: false
 
   alias LawnBot.Adapters.Feishu
-  alias LawnBot.Adapters.Lark.Api
+  alias LawnBot.Adapters.Lark.API
   alias LawnBot.Response
   alias LawnBot.TestReqStub
 
   @moduletag capture_log: true
 
-  @bot :LarkApiTestBot
+  @bot :LarkAPITestBot
   @token_path "/oauth/v3/token"
   @endpoint_path "/callback/ws/endpoint"
   @messages_path "/open-apis/im/v1/messages"
@@ -78,7 +78,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
       end)
 
       assert {:ok, %{access_token: "t-token", expires_in: 7200}} =
-               Api.fetch_tenant_token(Feishu.token_url(), @bot)
+               API.fetch_tenant_token(Feishu.token_url(), @bot)
     end
 
     test "sends configured permissions as the OAuth scope" do
@@ -94,14 +94,29 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         token_response()
       end)
 
-      assert {:ok, %{access_token: "t-token"}} = Api.fetch_tenant_token(Feishu.token_url(), @bot)
+      assert {:ok, %{access_token: "t-token"}} = API.fetch_tenant_token(Feishu.token_url(), @bot)
     end
 
     test "rejects a missing token" do
       stub(@token_path, response(%{"code" => 0, "expires_in" => 7200}))
 
       assert {:error, {:invalid_field_type, _message}} =
-               Api.fetch_tenant_token(Feishu.token_url(), @bot)
+               API.fetch_tenant_token(Feishu.token_url(), @bot)
+    end
+
+    test "rejects an empty access token or a non-integer lifetime" do
+      stub(@token_path, response(%{"code" => 0, "access_token" => "", "expires_in" => 7200}))
+
+      assert {:error, {:invalid_field_type, _message}} =
+               API.fetch_tenant_token(Feishu.token_url(), @bot)
+
+      stub(
+        @token_path,
+        response(%{"code" => 0, "access_token" => "t-token", "expires_in" => "7200"})
+      )
+
+      assert {:error, {:invalid_field_type, _message}} =
+               API.fetch_tenant_token(Feishu.token_url(), @bot)
     end
 
     test "maps OAuth errors" do
@@ -118,7 +133,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
       )
 
       assert {:error, {:lark_api, 400, 20_002, "The client secret is invalid."}} =
-               Api.fetch_tenant_token(Feishu.token_url(), @bot)
+               API.fetch_tenant_token(Feishu.token_url(), @bot)
     end
   end
 
@@ -140,19 +155,63 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         })
       end)
 
-      assert {:ok, endpoint} = Api.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
+      assert {:ok, endpoint} = API.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
       assert endpoint.url =~ "wss://msg.example.com/ws"
       assert endpoint.service_id == 1234
       assert endpoint.ping_interval == 60_000
-      assert endpoint.reconnect_nonce == 10
-      assert endpoint.reconnect_interval == 20
     end
 
     test "rejects an endpoint without a URL" do
       stub(@endpoint_path, response(%{"code" => 0, "data" => %{}}))
 
       assert {:error, {:invalid_field_type, _message}} =
-               Api.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
+               API.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
+    end
+
+    test "rejects endpoint data with malformed client configuration" do
+      stub(
+        @endpoint_path,
+        response(%{
+          "code" => 0,
+          "data" => %{"URL" => "wss://msg.example.com/ws?service_id=1234", "ClientConfig" => %{}}
+        })
+      )
+
+      assert {:error, {:invalid_field_type, _message}} =
+               API.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
+
+      stub(
+        @endpoint_path,
+        response(%{
+          "code" => 0,
+          "data" => %{
+            "URL" => "wss://msg.example.com/ws?service_id=1234",
+            "ClientConfig" => %{"PingInterval" => "60"}
+          }
+        })
+      )
+
+      assert {:error, {:invalid_field_type, _message}} =
+               API.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
+    end
+
+    test "rejects a websocket URL without a valid service_id" do
+      for url <- [
+            "wss://msg.example.com/ws",
+            "wss://msg.example.com/ws?service_id=abc",
+            "wss://msg.example.com/ws?service_id="
+          ] do
+        stub(
+          @endpoint_path,
+          response(%{
+            "code" => 0,
+            "data" => %{"URL" => url, "ClientConfig" => %{"PingInterval" => 60}}
+          })
+        )
+
+        assert {:error, {:invalid_field_type, "missing service_id in websocket URL"}} =
+                 API.fetch_ws_endpoint(Feishu.ws_endpoint_url(), @bot)
+      end
     end
   end
 
@@ -178,7 +237,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         text: "hello"
       }
 
-      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+      assert :ok = API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "replies to a message" do
@@ -199,7 +258,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         text: "pong"
       }
 
-      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+      assert :ok = API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "uploads an image before sending it" do
@@ -229,7 +288,7 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         attachment: {:path, path}
       }
 
-      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+      assert :ok = API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "uploads a binary as a file" do
@@ -254,11 +313,13 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         attachment: {:binary, "binary-data"}
       }
 
-      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+      assert :ok = API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "downloads URL attachments before uploading them" do
-      stub("/remote/image.png", fn _request ->
+      stub("/remote/image.png", fn request ->
+        assert Req.Request.get_header(request, "authorization") == []
+
         Req.Response.new(
           status: 200,
           body: "remote-image",
@@ -280,14 +341,144 @@ defmodule LawnBot.Adapters.Lark.ApiTest do
         attachment: {:url, "https://example.com/remote/image.png"}
       }
 
-      assert :ok = Api.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+      assert :ok = API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+    end
+
+    test "downloads message resources with the tenant token" do
+      resource_path = "/open-apis/im/v1/messages/om-image/resources/img-key"
+
+      stub(resource_path, fn request ->
+        assert URI.decode_query(request.url.query) == %{"type" => "image"}
+        assert Req.Request.get_header(request, "authorization") == ["Bearer t-token"]
+
+        Req.Response.new(
+          status: 200,
+          body: "image-data",
+          headers: %{"content-type" => ["image/jpeg"]}
+        )
+      end)
+
+      stub(@images_path, fn request ->
+        assert IO.iodata_to_binary(request.body) =~ ~s(filename="img-key")
+        response(%{"code" => 0, "data" => %{"image_key" => "img-copy"}})
+      end)
+
+      stub("/open-apis/im/v1/messages/om-image/reply", fn _request -> response(%{"code" => 0}) end)
+
+      reply = %Response{
+        action: :reply,
+        session_id: "oc-chat",
+        session_type: :group,
+        reply_message_id: "om-image",
+        attachment: %LawnBot.Attachment{
+          url: Feishu.message_resource_url("om-image", "img-key", "image")
+        }
+      }
+
+      assert :ok = API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
 
     test "ignores actions that do not send messages" do
       assert :ok =
-               Api.send_response(Feishu.api_urls(), @bot, "t-token", %Response{action: :ignore})
+               API.send_response(Feishu.api_urls(), @bot, "t-token", %Response{action: :ignore})
 
       refute_receive {:stub_request, _path, _request}, 50
+    end
+
+    test "propagates messaging API errors" do
+      stub(
+        @messages_path,
+        response(%{"code" => 230_002, "msg" => "bot is not in the chat"}, 400)
+      )
+
+      reply = %Response{
+        action: :new_message,
+        session_id: "oc-chat",
+        session_type: :group,
+        text: "hello"
+      }
+
+      assert {:error, {:lark_api, 400, 230_002, "bot is not in the chat"}} =
+               API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+    end
+
+    test "rejects success responses that do not follow the API schema" do
+      stub(@messages_path, response("<html>gateway</html>", 200))
+
+      reply = %Response{
+        action: :new_message,
+        session_id: "oc-chat",
+        session_type: :group,
+        text: "hello"
+      }
+
+      assert {:error, {:unexpected_response, 200, "<html>gateway</html>"}} =
+               API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+    end
+
+    test "rejects image uploads without an image key" do
+      path = Path.join(System.tmp_dir!(), "lark-api-test-#{System.unique_integer([:positive])}.png")
+      File.write!(path, "png-data")
+      on_exit(fn -> File.rm(path) end)
+
+      stub(@images_path, response(%{"code" => 0, "data" => %{}}))
+
+      reply = %Response{
+        action: :new_message,
+        session_id: "oc-chat",
+        session_type: :group,
+        attachment: {:path, path}
+      }
+
+      assert {:error, {:invalid_field_type, _message}} =
+               API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+    end
+
+    test "rejects file uploads without a file key" do
+      stub(@files_path, response(%{"code" => 0, "data" => %{}}))
+
+      reply = %Response{
+        action: :new_message,
+        session_id: "oc-chat",
+        session_type: :group,
+        attachment: {:binary, "file-data"}
+      }
+
+      assert {:error, {:invalid_field_type, _message}} =
+               API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+    end
+
+    test "fails when a message resource cannot be downloaded" do
+      stub(
+        "/open-apis/im/v1/messages/om-image/resources/img-key",
+        response(%{"code" => 234_003, "msg" => "invalid file key"}, 400)
+      )
+
+      reply = %Response{
+        action: :reply,
+        session_id: "oc-chat",
+        session_type: :group,
+        reply_message_id: "om-image",
+        attachment: %LawnBot.Attachment{
+          url: Feishu.message_resource_url("om-image", "img-key", "image")
+        }
+      }
+
+      assert {:error, "failed to download attachment: HTTP 400"} =
+               API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
+    end
+
+    test "rejects attachments without a URL" do
+      reply = %Response{
+        action: :reply,
+        session_id: "oc-chat",
+        session_type: :group,
+        reply_message_id: "om-message",
+        attachment: %LawnBot.Attachment{filename: "empty.png"}
+      }
+
+      assert {:error, "attachment has no url"} =
+               API.send_response(Feishu.api_urls(), @bot, "t-token", reply)
     end
   end
 end

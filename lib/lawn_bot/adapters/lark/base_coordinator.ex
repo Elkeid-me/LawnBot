@@ -17,8 +17,6 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
 
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
     quote bind_quoted: [
-            accounts_url: accounts_url,
-            open_api_url: open_api_url,
             label: label,
             worker: worker,
             token_url: token_url,
@@ -26,7 +24,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
           ] do
       use GenServer
 
-      alias LawnBot.Adapters.Lark.Api
+      alias LawnBot.Adapters.Lark.API
       alias LawnBot.Adapters.Lark.Utils
       alias LawnBot.TokenStore
 
@@ -67,7 +65,6 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
 
       @impl GenServer
       def handle_continue(:bootstrap, state), do: bootstrap(state)
-      def handle_continue(_continue, state), do: {:noreply, state}
 
       @impl GenServer
       def handle_info(:bootstrap, state), do: bootstrap(state)
@@ -77,7 +74,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
       defp bootstrap(state) do
         %{name: name, workers: workers} = state
 
-        case Api.fetch_tenant_token(@token_url, name) do
+        case API.fetch_tenant_token(@token_url, name) do
           {:ok, auth} ->
             TokenStore.put(name, auth.access_token)
 
@@ -106,7 +103,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
       defp refresh_token(state) do
         %{name: name} = state
 
-        case Api.fetch_tenant_token(@token_url, name) do
+        case API.fetch_tenant_token(@token_url, name) do
           {:ok, auth} ->
             Logger.info("Refreshed token for #{Utils.bot_name(@label, name)}")
             TokenStore.put(name, auth.access_token)
@@ -139,7 +136,7 @@ defmodule LawnBot.Adapters.Lark.BaseCoordinator do
 
       defp start_workers(name, workers) do
         Enum.reduce_while(1..workers, :ok, fn index, :ok ->
-          with {:ok, endpoint} <- Api.fetch_ws_endpoint(@ws_endpoint_url, name),
+          with {:ok, endpoint} <- API.fetch_ws_endpoint(@ws_endpoint_url, name),
                :ok <- start_worker(name, index, endpoint) do
             {:cont, :ok}
           else

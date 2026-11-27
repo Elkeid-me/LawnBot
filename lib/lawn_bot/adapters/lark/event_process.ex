@@ -167,10 +167,6 @@ defmodule LawnBot.Adapters.Lark.EventProcess do
 
       attachment = %Attachment{
         filename: content["file_name"],
-        mime_type: nil,
-        size: content["file_size"] || content["size"],
-        width: content["width"],
-        height: content["height"],
         url: resource_url(message["message_id"], key, resource_type, messages_url)
       }
 

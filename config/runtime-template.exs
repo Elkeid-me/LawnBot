@@ -16,7 +16,7 @@ config :lawn_bot,
     #     app_secret: System.get_env("FEISHU_APP_SECRET", ""),
     #     name: :LawnBotFeishu,
     #     handler: LawnBot.ExampleHandler,
-    #     permissions: ["im:message:receive_as_bot", "im:message:send_as_bot"],
+    #     permissions: ["im:message", "im:resource"],
     #     workers: 1
     #   ]
     # ],
@@ -26,7 +26,7 @@ config :lawn_bot,
     #     app_secret: System.get_env("LARK_APP_SECRET", ""),
     #     name: :LawnBotLark,
     #     handler: LawnBot.ExampleHandler,
-    #     permissions: ["im:message:receive_as_bot", "im:message:send_as_bot"],
+    #     permissions: ["im:message", "im:resource"],
     #     workers: 1
     #   ]
     # ]

@@ -65,12 +65,10 @@ defmodule LawnBot.Adapters.Lark.Frame do
   end
 
   @doc false
-  @spec header_list(map() | [Header.t()]) :: [Header.t()]
+  @spec header_list(map()) :: [Header.t()]
   def header_list(headers) when is_map(headers) do
     Enum.map(headers, fn {key, value} -> %Header{key: to_string(key), value: to_string(value)} end)
   end
-
-  def header_list(headers) when is_list(headers), do: headers
 
   @doc false
   @spec headers_map(t()) :: %{optional(String.t()) => String.t()}

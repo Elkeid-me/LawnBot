@@ -97,7 +97,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
   end
 
   test "extracts file metadata" do
-    content = ~s({"file_key":"file-1","file_name":"report.pdf","file_size":2048})
+    content = ~s({"file_key":"file-1","file_name":"report.pdf"})
 
     assert {:ok, %Event{content: %Content{attachments: [attachment]}}} =
              EventProcess.to_event(
@@ -107,7 +107,7 @@ defmodule LawnBot.Adapters.Lark.EventProcessTest do
 
     assert %Attachment{
              filename: "report.pdf",
-             size: 2048,
+             size: nil,
              url:
                "https://open.feishu.cn/open-apis/im/v1/messages/om-message/resources/file-1?type=file"
            } = attachment

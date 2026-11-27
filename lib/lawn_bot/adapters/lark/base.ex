@@ -136,7 +136,7 @@ defmodule LawnBot.Adapters.Lark.Base do
                         permissions: [
                           type: {:list, :string},
                           required: false,
-                          default: [],
+                          default: ["im:message", "im:resource"],
                           doc:
                             "Application-identity scopes to request for the tenant access token. " <>
                               "They are sent as the OAuth `scope` field. When empty, the platform uses " <>

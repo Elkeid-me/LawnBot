@@ -5,6 +5,8 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
   alias LawnBot.Adapters.Lark
   alias LawnBot.Adapters.Lark.Coordinator
   alias LawnBot.Adapters.Lark.Worker
+  alias LawnBot.TestReqStub
+  alias LawnBot.TokenStore
 
   @moduletag capture_log: true
 
@@ -50,13 +52,13 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert Feishu.worker_module() == Feishu.Worker
   end
 
-  test "validates options with a default handler and no explicit scopes" do
+  test "validates options with default handler and permissions" do
     assert {:ok, options} = Lark.validate_options(@options)
     assert options[:app_id] == "cli-app"
     assert options[:app_secret] == "secret"
     assert options[:name] == @bot
     assert options[:handler] == LawnBot.ExampleHandler
-    assert options[:permissions] == []
+    assert options[:permissions] == ["im:message", "im:resource"]
     assert options[:workers] == 1
   end
 
@@ -85,6 +87,9 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
     assert {:error, %NimbleOptions.ValidationError{}} =
              Lark.validate_options(Keyword.put(@options, :app_secret, ""))
 
+    assert {:error, %NimbleOptions.ValidationError{}} =
+             Lark.validate_options(Keyword.put(@options, :app_id, 12_345))
+
     assert {:error, %NimbleOptions.ValidationError{message: "Expected a keyword list"}} =
              Feishu.validate_options(%{})
   end
@@ -105,21 +110,23 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
 
     assert length(children) == 4
 
-    assert %{id: {LawnBot.AdapterRegistry, {Worker, @bot}}} = Enum.at(children, 0)
+    assert %{id: {LawnBot.AdapterRegistry, {Worker, {:task_supervisor, @bot}}}} =
+             Enum.at(children, 0)
 
     assert %{id: {Finch.Pool.Supervisor, _pool_name}, start: {Finch.Pool.Supervisor, _, _}} =
              Enum.at(children, 1)
 
     assert_pool_size(Enum.at(children, 1), 16)
 
-    assert %{id: {LawnBot.AdapterRegistry, {Worker, @bot}}} = Enum.at(children, 2)
+    assert %{id: {LawnBot.AdapterRegistry, {Worker, {:worker_supervisor, @bot}}}} =
+             Enum.at(children, 2)
 
     assert %{id: Coordinator, start: {Coordinator, :start_link, [{@bot, 1}]}} =
              Enum.at(children, 3)
 
     assert :persistent_term.get({@bot, :app_id}) == "cli-app"
     assert :persistent_term.get({@bot, :app_secret}) == "secret"
-    assert :persistent_term.get({@bot, :permissions}) == []
+    assert :persistent_term.get({@bot, :permissions}) == ["im:message", "im:resource"]
     assert is_function(:persistent_term.get(@bot), 1)
   end
 
@@ -130,6 +137,60 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
              Lark.init(opts)
 
     assert_pool_size(Enum.at(children, 1), 48)
+  end
+
+  test "starts the supervision tree and bootstraps workers" do
+    assert {:ok, opts} = Lark.validate_options(@options)
+
+    start_registry()
+    ensure_token_store()
+
+    previous_req_options = Elixir.Application.fetch_env(:req, :default_options)
+    Elixir.Application.put_env(:req, :default_options, adapter: TestReqStub)
+
+    on_exit(fn ->
+      :persistent_term.erase({TestReqStub, "/oauth/v3/token"})
+      :persistent_term.erase({TestReqStub, "/callback/ws/endpoint"})
+
+      case previous_req_options do
+        {:ok, options} -> Elixir.Application.put_env(:req, :default_options, options)
+        :error -> Elixir.Application.delete_env(:req, :default_options)
+      end
+    end)
+
+    :persistent_term.put({TestReqStub, "/oauth/v3/token"}, fn _request ->
+      Req.Response.new(
+        status: 200,
+        body: %{"code" => 0, "access_token" => "t-token", "expires_in" => 7200}
+      )
+    end)
+
+    :persistent_term.put({TestReqStub, "/callback/ws/endpoint"}, fn _request ->
+      Req.Response.new(
+        status: 200,
+        body: %{
+          "code" => 0,
+          "data" => %{
+            "URL" => "wss://127.0.0.1:1/ws?service_id=42",
+            "ClientConfig" => %{"PingInterval" => 120}
+          }
+        }
+      )
+    end)
+
+    assert {:ok, _pid} = start_supervised({Feishu, opts})
+
+    assert [_] = Registry.lookup(LawnBot.AdapterRegistry, {Feishu, @bot})
+    assert [_] = Registry.lookup(LawnBot.AdapterRegistry, {Feishu.Coordinator, @bot})
+
+    assert [_] =
+             Registry.lookup(LawnBot.AdapterRegistry, {Feishu.Worker, {:task_supervisor, @bot}})
+
+    assert [_] =
+             Registry.lookup(LawnBot.AdapterRegistry, {Feishu.Worker, {:worker_supervisor, @bot}})
+
+    wait_until(fn -> Registry.lookup(LawnBot.AdapterRegistry, {Feishu.Worker, {@bot, 1}}) != [] end)
+    assert TokenStore.get(@bot) == "t-token"
   end
 
   test "the stored handler delegates to the configured module" do
@@ -168,5 +229,32 @@ defmodule LawnBot.Adapters.Lark.BaseTest do
                    {LawnBot.Finch, %Finch.Pool{}, %{size: ^expected_size}, false}}
                 ]}
            } = pool_spec
+  end
+
+  defp start_registry do
+    if Process.whereis(LawnBot.AdapterRegistry) == nil do
+      start_supervised!({Registry, keys: :unique, name: LawnBot.AdapterRegistry})
+    end
+
+    :ok
+  end
+
+  defp ensure_token_store do
+    case :ets.whereis(:auth_tokens) do
+      :undefined -> TokenStore.new()
+      _table -> :ok
+    end
+  end
+
+  defp wait_until(fun, timeout \\ 2_000)
+  defp wait_until(_fun, timeout) when timeout <= 0, do: flunk("condition was not met in time")
+
+  defp wait_until(fun, timeout) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(fun, timeout - 20)
+    end
   end
 end

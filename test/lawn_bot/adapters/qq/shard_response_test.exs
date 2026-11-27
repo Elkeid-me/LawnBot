@@ -88,6 +88,29 @@ defmodule LawnBot.Adapters.QQ.ShardResponseTest do
     end)
   end
 
+  defp blocking_put_stub(path) do
+    test_pid = self()
+
+    :persistent_term.put({TestReqStub, path}, fn request ->
+      send(test_pid, {:put_started, path, self(), request.body})
+
+      receive do
+        :release -> Req.Response.new(status: 200, body: %{})
+      after
+        5_000 -> Req.Response.new(status: 200, body: %{})
+      end
+    end)
+  end
+
+  defp stub_part_finish do
+    test_pid = self()
+
+    :persistent_term.put({TestReqStub, @group_part_finish}, fn request ->
+      send(test_pid, {:finish, json_body(request)["part_index"]})
+      Req.Response.new(status: 200, body: %{})
+    end)
+  end
+
   defp dispatch(handler) do
     :persistent_term.put(@bot, handler)
 
@@ -114,6 +137,17 @@ defmodule LawnBot.Adapters.QQ.ShardResponseTest do
   defp json_body(request) do
     request.body |> IO.iodata_to_binary() |> JSON.decode!()
   end
+
+  defp receive_finishes(count) do
+    for _ <- 1..count, reduce: %{} do
+      finishes ->
+        assert_receive {:request, @group_part_finish, request}, 2_000
+        body = json_body(request)
+        Map.put(finishes, body["part_index"], body)
+    end
+  end
+
+  defp md5(binary), do: Base.encode16(:crypto.hash(:md5, binary), case: :lower)
 
   test "sends a reply with text and a message reference" do
     stub(@group_messages)
@@ -335,23 +369,25 @@ defmodule LawnBot.Adapters.QQ.ShardResponseTest do
     assert part_0.method == :put
     assert part_0.body == first
 
-    assert_receive {:request, @group_part_finish, finish_0}, 2_000
-    finish_0_body = json_body(finish_0)
-    assert finish_0_body["upload_id"] == "upload-1"
-    assert finish_0_body["part_index"] == 0
-    assert finish_0_body["block_size"] == @inline_limit
-    assert finish_0_body["md5"] == Base.encode16(:crypto.hash(:md5, first), case: :lower)
-
     assert_receive {:request, @upload_part_1, part_1}, 2_000
     assert part_1.method == :put
     assert part_1.body == second
 
-    assert_receive {:request, @group_part_finish, finish_1}, 2_000
-    finish_1_body = json_body(finish_1)
-    assert finish_1_body["upload_id"] == "upload-1"
-    assert finish_1_body["part_index"] == 1
-    assert finish_1_body["block_size"] == 1
-    assert finish_1_body["md5"] == Base.encode16(:crypto.hash(:md5, second), case: :lower)
+    finishes = receive_finishes(2)
+
+    assert finishes[0] == %{
+             "upload_id" => "upload-1",
+             "part_index" => 0,
+             "block_size" => @inline_limit,
+             "md5" => md5(first)
+           }
+
+    assert finishes[1] == %{
+             "upload_id" => "upload-1",
+             "part_index" => 1,
+             "block_size" => 1,
+             "md5" => md5(second)
+           }
 
     assert_receive {:request, @group_files, complete}, 2_000
     complete_body = json_body(complete)
@@ -362,6 +398,78 @@ defmodule LawnBot.Adapters.QQ.ShardResponseTest do
     assert_receive {:request, @group_messages, message}, 2_000
     assert json_body(message)["media"] == %{"file_info" => "chunk-file-info"}
     assert json_body(message)["msg_type"] == 7
+  end
+
+  test "uploads chunks concurrently and finishes them in order" do
+    binary = :binary.copy(<<3>>, @inline_limit + 1)
+    <<first::binary-size(@inline_limit), second::binary>> = binary
+
+    stub(
+      @group_prepare,
+      Req.Response.new(
+        status: 200,
+        body: %{
+          "upload_id" => "upload-concurrent",
+          "parts" => [
+            %{
+              "index" => 0,
+              "presigned_url" => "https://upload.example.com/part-0",
+              "block_size" => Integer.to_string(@inline_limit)
+            },
+            %{
+              "index" => 1,
+              "presigned_url" => "https://upload.example.com/part-1",
+              "block_size" => "1"
+            }
+          ]
+        }
+      )
+    )
+
+    blocking_put_stub(@upload_part_0)
+    blocking_put_stub(@upload_part_1)
+    stub_part_finish()
+    stub(@group_files, Req.Response.new(status: 200, body: %{"file_info" => "concurrent-file"}))
+    stub(@group_messages)
+
+    dispatch(fn _event ->
+      %Response{
+        action: :new_message,
+        session_id: "group-1",
+        reply_message_id: nil,
+        session_type: :group,
+        text: nil,
+        attachment: {:binary, binary},
+        reference_message_id: nil
+      }
+    end)
+
+    assert_receive {:request, @group_prepare, _prepare}, 2_000
+
+    # Both PUTs must be in flight at the same time; a sequential
+    # implementation would never deliver the second one before release.
+    assert_receive {:put_started, @upload_part_0, uploader_0, ^first}, 2_000
+    assert_receive {:put_started, @upload_part_1, uploader_1, ^second}, 2_000
+
+    send(uploader_0, :release)
+    send(uploader_1, :release)
+
+    # Finishes are sequential: the server rejects a part whose predecessors
+    # are still unfinished.
+    receive do
+      {:finish, 0} -> :ok
+      {:finish, 1} -> flunk("second chunk finished before the first")
+    after
+      2_000 -> flunk("chunk finish timed out")
+    end
+
+    assert_receive {:finish, 1}, 2_000
+
+    assert_receive {:request, @group_files, complete}, 2_000
+    assert json_body(complete)["upload_id"] == "upload-concurrent"
+
+    assert_receive {:request, @group_messages, message}, 2_000
+    assert json_body(message)["media"] == %{"file_info" => "concurrent-file"}
   end
 
   test "streams a large path attachment in chunks" do
@@ -420,14 +528,12 @@ defmodule LawnBot.Adapters.QQ.ShardResponseTest do
     assert_receive {:request, @upload_part_0, part_0}, 2_000
     assert part_0.body == first
 
-    assert_receive {:request, @group_part_finish, finish_0}, 2_000
-    assert json_body(finish_0)["part_index"] == 0
-
     assert_receive {:request, @upload_part_1, part_1}, 2_000
     assert part_1.body == second
 
-    assert_receive {:request, @group_part_finish, finish_1}, 2_000
-    assert json_body(finish_1)["part_index"] == 1
+    finishes = receive_finishes(2)
+    assert finishes[0]["part_index"] == 0
+    assert finishes[1]["part_index"] == 1
 
     assert_receive {:request, @group_files, _complete}, 2_000
     assert_receive {:request, @group_messages, message}, 2_000

@@ -1,4 +1,4 @@
-defmodule LawnBot.Adapters.Lark.Api do
+defmodule LawnBot.Adapters.Lark.API do
   @moduledoc false
 
   alias :persistent_term, as: PersistentTerm
@@ -38,15 +38,12 @@ defmodule LawnBot.Adapters.Lark.Api do
       end
 
     case request(:post, token_url, form: body, finch: finch(name)) do
-      {:ok, body} ->
-        with {:ok, access_token} <-
-               Utils.check_empty_string(body["access_token"] || body["tenant_access_token"]),
-             {:ok, expires_in} <-
-               Utils.check_pos_int(body["expires_in"] || body["expire"]) do
-          {:ok, %{access_token: access_token, expires_in: expires_in}}
-        else
-          {:error, message} -> {:error, {:invalid_field_type, message}}
-        end
+      {:ok, %{"access_token" => access_token, "expires_in" => expires_in}}
+      when is_binary(access_token) and access_token != "" and is_integer(expires_in) ->
+        {:ok, %{access_token: access_token, expires_in: expires_in}}
+
+      {:ok, _body} ->
+        {:error, {:invalid_field_type, "missing access_token or expires_in"}}
 
       {:error, _reason} = error ->
         error
@@ -57,14 +54,7 @@ defmodule LawnBot.Adapters.Lark.Api do
   Requests a WebSocket endpoint from the Lark/Feishu open platform.
   """
   @spec fetch_ws_endpoint(String.t(), atom()) ::
-          {:ok,
-           %{
-             url: String.t(),
-             service_id: integer(),
-             ping_interval: pos_integer(),
-             reconnect_nonce: non_neg_integer(),
-             reconnect_interval: non_neg_integer()
-           }}
+          {:ok, %{url: String.t(), service_id: integer(), ping_interval: pos_integer()}}
           | api_error()
   def fetch_ws_endpoint(ws_endpoint_url, name) do
     body = %{
@@ -72,28 +62,26 @@ defmodule LawnBot.Adapters.Lark.Api do
       "AppSecret" => PersistentTerm.get({name, :app_secret})
     }
 
-    with {:ok, body} <-
-           request(:post, ws_endpoint_url,
-             json: body,
-             headers: %{"locale" => "zh"},
-             finch: finch(name)
-           ),
-         data when is_map(data) <- body["data"],
-         url when is_binary(url) and url != "" <- data["URL"] || data["url"] do
-      config = data["ClientConfig"] || data["client_config"] || %{}
+    case request(:post, ws_endpoint_url,
+           json: body,
+           headers: %{"locale" => "zh"},
+           finch: finch(name)
+         ) do
+      {:ok, %{"data" => %{"URL" => url, "ClientConfig" => %{"PingInterval" => seconds}}}}
+      when is_binary(url) and url != "" and is_integer(seconds) ->
+        case service_id(url) do
+          {:ok, service_id} ->
+            {:ok, %{url: url, service_id: service_id, ping_interval: max(seconds * 1_000, 10_000)}}
 
-      {:ok,
-       %{
-         url: url,
-         service_id: service_id(url),
-         ping_interval: seconds_to_ms(config["PingInterval"], 120),
-         reconnect_nonce: seconds(config["ReconnectNonce"], 30),
-         reconnect_interval: seconds(config["ReconnectInterval"], 120)
-       }}
-    else
-      nil -> {:error, {:invalid_field_type, "missing websocket endpoint"}}
-      {:error, _reason} = error -> error
-      _other -> {:error, {:invalid_field_type, "invalid websocket endpoint response"}}
+          :error ->
+            {:error, {:invalid_field_type, "missing service_id in websocket URL"}}
+        end
+
+      {:ok, _body} ->
+        {:error, {:invalid_field_type, "invalid websocket endpoint response"}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -140,7 +128,7 @@ defmodule LawnBot.Adapters.Lark.Api do
   defp build_attachment_messages(_urls, _name, _token, nil), do: {:ok, []}
 
   defp build_attachment_messages(urls, name, token, attachment) do
-    with {:ok, resolved} <- resolve_attachment(attachment, name),
+    with {:ok, resolved} <- resolve_attachment(urls, name, token, attachment),
          {:ok, msg_type, key} <- upload_attachment(urls, name, token, resolved) do
       content =
         case msg_type do
@@ -176,11 +164,11 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp resolve_attachment({:binary, binary}, _name) when is_binary(binary) do
+  defp resolve_attachment(_urls, _name, _token, {:binary, binary}) when is_binary(binary) do
     {:ok, %{binary: binary, filename: "attachment", content_type: nil}}
   end
 
-  defp resolve_attachment({:path, path}, _name) when is_binary(path) do
+  defp resolve_attachment(_urls, _name, _token, {:path, path}) when is_binary(path) do
     case File.read(path) do
       {:ok, binary} ->
         {:ok,
@@ -195,11 +183,13 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp resolve_attachment({:url, url}, name) when is_binary(url), do: fetch_remote(url, name)
+  defp resolve_attachment(urls, name, token, {:url, url}) when is_binary(url) do
+    fetch_remote(url, urls, name, token)
+  end
 
-  defp resolve_attachment(%Attachment{} = attachment, name) do
+  defp resolve_attachment(urls, name, token, %Attachment{} = attachment) do
     if is_binary(attachment.url) do
-      with {:ok, remote} <- fetch_remote(attachment.url, name) do
+      with {:ok, remote} <- fetch_remote(attachment.url, urls, name, token) do
         {:ok,
          %{
            binary: remote.binary,
@@ -212,10 +202,19 @@ defmodule LawnBot.Adapters.Lark.Api do
     end
   end
 
-  defp resolve_attachment(_attachment, _name), do: {:error, "unsupported attachment"}
+  defp resolve_attachment(_urls, _name, _token, _attachment), do: {:error, "unsupported attachment"}
 
-  defp fetch_remote(url, name) do
-    case Req.get(url, finch: finch(name)) do
+  defp fetch_remote(url, urls, name, token) do
+    # Message resources live behind the OpenAPI and require the tenant token;
+    # other URLs are public and must not receive it.
+    options =
+      if String.starts_with?(url, urls.messages <> "/") do
+        [finch: finch(name), headers: auth_header(token)]
+      else
+        [finch: finch(name)]
+      end
+
+    case Req.get(url, options) do
       {:ok, %Req.Response{status: 200, body: body} = response} when is_binary(body) ->
         {:ok,
          %{
@@ -335,7 +334,7 @@ defmodule LawnBot.Adapters.Lark.Api do
 
   defp image?(filename, content_type) do
     (is_binary(content_type) and String.starts_with?(content_type, "image/")) or
-      Path.extname(String.downcase(filename || "")) in @image_extensions
+      Path.extname(String.downcase(filename)) in @image_extensions
   end
 
   defp filename_from_url(url) do
@@ -349,21 +348,10 @@ defmodule LawnBot.Adapters.Lark.Api do
   defp service_id(url) do
     with %URI{query: query} when is_binary(query) <- URI.parse(url),
          %{"service_id" => value} <- URI.decode_query(query),
-         {service_id, ""} <- Integer.parse(value) do
-      service_id
+         {service_id, ""} when service_id > 0 <- Integer.parse(value) do
+      {:ok, service_id}
     else
-      _other -> 0
-    end
-  end
-
-  defp seconds_to_ms(value, default_seconds) do
-    max(seconds(value, default_seconds) * 1_000, 10_000)
-  end
-
-  defp seconds(value, default) do
-    case Utils.check_non_neg_int(value) do
-      {:ok, seconds} -> seconds
-      {:error, _message} -> default
+      _other -> :error
     end
   end
 end

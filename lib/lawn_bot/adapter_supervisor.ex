@@ -46,7 +46,14 @@ defmodule LawnBot.AdapterSupervisor do
   def start_adapter(platform, options) when is_atom(platform) and is_list(options) do
     case adapter_child_spec(platform, options) do
       {:ok, spec} ->
-        DynamicSupervisor.start_child(__MODULE__, spec)
+        case DynamicSupervisor.start_child(__MODULE__, spec) do
+          {:ok, _pid} = ok ->
+            ok
+
+          {:error, reason} = error ->
+            Logger.error("Failed to start adapter for platform #{platform}: #{inspect(reason)}.")
+            error
+        end
 
       {:error, %NimbleOptions.ValidationError{} = err} ->
         Logger.error("Failed to start adapter for platform #{platform}: #{Exception.message(err)}.")

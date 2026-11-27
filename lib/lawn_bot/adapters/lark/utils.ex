@@ -17,10 +17,10 @@ defmodule LawnBot.Adapters.Lark.Utils do
   def worker_via_tuple(module, name, index), do: via_tuple(module, {name, index})
 
   @spec task_supervisor_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def task_supervisor_via_tuple(module, name), do: via_tuple(module, name)
+  def task_supervisor_via_tuple(module, name), do: via_tuple(module, {:task_supervisor, name})
 
   @spec worker_supervisor_via_tuple(module(), atom()) :: {:via, Registry, {module(), term()}}
-  def worker_supervisor_via_tuple(module, name), do: via_tuple(module, name)
+  def worker_supervisor_via_tuple(module, name), do: via_tuple(module, {:worker_supervisor, name})
 
   defp via_tuple(module, key) do
     {:via, Registry, {LawnBot.AdapterRegistry, {module, key}}}

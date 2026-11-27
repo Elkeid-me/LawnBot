@@ -17,11 +17,11 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
     }
 
     # credo:disable-for-next-line Credo.Check.Refactor.LongQuoteBlocks
-    quote do
+    quote bind_quoted: [label: label, api_urls: Macro.escape(api_urls)] do
       use WebSockex
 
       alias :persistent_term, as: PersistentTerm
-      alias LawnBot.Adapters.Lark.Api
+      alias LawnBot.Adapters.Lark.API
       alias LawnBot.Adapters.Lark.EventProcess
       alias LawnBot.Adapters.Lark.Frame
       alias LawnBot.Adapters.Lark.Utils
@@ -30,18 +30,17 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
 
       require Logger
 
-      @label unquote(label)
-      @messages_url unquote(api_urls.messages)
-      @api_urls unquote(Macro.escape(api_urls))
+      @label label
+      @api_urls api_urls
+      @messages_url @api_urls.messages
       @fragment_ttl_ms 5_000
-      @default_ping_interval 120_000
 
       defstruct [
         :name,
         :url,
         :service_id,
         index: 1,
-        ping_interval: @default_ping_interval,
+        ping_interval: :infinity,
         ping_ref: nil,
         last_frame_at: 0,
         fragments: %{},
@@ -53,7 +52,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
               url: String.t(),
               service_id: integer(),
               index: pos_integer(),
-              ping_interval: pos_integer(),
+              ping_interval: timeout(),
               ping_ref: reference() | nil,
               last_frame_at: non_neg_integer(),
               fragments: map(),
@@ -99,12 +98,10 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
 
           {:ok, frame} ->
             Logger.debug("#{log_name(state)} ignoring frame #{inspect(frame)}")
-
             {:ok, state}
 
           {:error, reason} ->
             Logger.warning("#{log_name(state)} invalid frame: #{inspect(reason)}")
-
             {:ok, state}
         end
       end
@@ -215,14 +212,8 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
       end
 
       defp handle_event(event, state) do
-        case PersistentTerm.get(state.name, nil) do
-          handler when is_function(handler, 1) ->
-            response = safe_handle(handler, event, state)
-            handle_response(response, state)
-
-          _other ->
-            :ok
-        end
+        response = safe_handle(PersistentTerm.get(state.name), event, state)
+        handle_response(response, state)
       end
 
       defp safe_handle(handler, event, state) do
@@ -241,30 +232,18 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
 
       defp handle_response(%Response{action: action} = response, state)
            when action in [:reply, :new_message] do
-        case token(state.name) do
-          token when is_binary(token) ->
-            case Api.send_response(@api_urls, state.name, token, response) do
-              :ok ->
-                :ok
+        case API.send_response(@api_urls, state.name, TokenStore.get(state.name), response) do
+          :ok ->
+            :ok
 
-              {:error, reason} ->
-                Logger.warning("#{log_name(state)} failed to send response: " <> inspect(reason))
-            end
-
-          nil ->
-            Logger.error("#{log_name(state)} has no access token")
+          {:error, reason} ->
+            Logger.warning("#{log_name(state)} failed to send response: " <> inspect(reason))
         end
       end
 
       defp handle_response(_response, _state), do: :ok
 
       defp log_name(state), do: Utils.worker_name(@label, state.name, state.index)
-
-      defp token(name) do
-        TokenStore.get(name)
-      rescue
-        ArgumentError -> nil
-      end
 
       defp ping_frame(state) do
         %Frame{
@@ -377,9 +356,6 @@ defmodule LawnBot.Adapters.Lark.BaseWorker do
           _other -> 0
         end
       end
-
-      defp int_header(value) when is_integer(value), do: value
-      defp int_header(_value), do: 0
     end
   end
 end

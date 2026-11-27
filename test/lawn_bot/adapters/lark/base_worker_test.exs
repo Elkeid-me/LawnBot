@@ -56,7 +56,7 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
   defp start_task_supervisor do
     name = Utils.task_supervisor_via_tuple(Worker, @bot)
 
-    case Registry.lookup(LawnBot.AdapterRegistry, {Worker, @bot}) do
+    case Registry.lookup(LawnBot.AdapterRegistry, {Worker, {:task_supervisor, @bot}}) do
       [] -> start_supervised!({Task.Supervisor, name: name})
       _pids -> :ok
     end
@@ -143,6 +143,23 @@ defmodule LawnBot.Adapters.Lark.BaseWorkerTest do
 
     {_ack, body} = ack_body(ack_binary)
     assert body["code"] == 200
+    refute_receive {:handled, _event}, 100
+  end
+
+  test "acknowledges but ignores malformed event payloads" do
+    test_pid = self()
+    :persistent_term.put(@bot, fn event -> send(test_pid, {:handled, event}) end)
+
+    for payload <- ["not-json", "[]", ~s("text")] do
+      frame = data_frame(payload)
+
+      assert {:reply, {:binary, ack_binary}, _updated} =
+               Worker.handle_frame({:binary, Frame.encode_frame(frame)}, state())
+
+      {_ack, body} = ack_body(ack_binary)
+      assert body["code"] == 200
+    end
+
     refute_receive {:handled, _event}, 100
   end
 

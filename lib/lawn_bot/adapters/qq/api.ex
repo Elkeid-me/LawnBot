@@ -15,6 +15,8 @@ defmodule LawnBot.Adapters.QQ.API do
   @inline_upload_limit 5 * 1024 * 1024
   @md5_10m_limit 10_002_432
   @hash_read_size 1_048_576
+  @upload_concurrency 4
+  @upload_part_timeout 120_000
 
   @image_extensions ~w(.png .jpg .jpeg .gif .webp .bmp)
   @video_extensions ~w(.mp4)
@@ -295,27 +297,17 @@ defmodule LawnBot.Adapters.QQ.API do
   end
 
   defp upload_parts(name, access_token, response, upload_id, chunks) do
-    Enum.reduce_while(chunks, :ok, fn {part, chunk}, :ok ->
-      case upload_part(name, access_token, response, upload_id, part, chunk) do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp upload_part(name, access_token, response, upload_id, part, chunk) do
-    with :ok <- put_part(part, chunk) do
-      body = %{
-        "upload_id" => upload_id,
-        "part_index" => part.index,
-        "block_size" => byte_size(chunk),
-        "md5" => hash(:md5, chunk)
-      }
-
-      case post_api(name, access_token, part_finish_path(response), body) do
-        {:ok, _body} -> :ok
-        {:error, _reason} = error -> error
-      end
+    chunks
+    |> Task.async_stream(
+      fn {part, chunk} ->
+        with :ok <- put_part(part, chunk), do: {:ok, part_metadata(part, chunk)}
+      end,
+      async_stream_options()
+    )
+    |> collect_parts()
+    |> case do
+      {:ok, parts} -> finish_parts(name, access_token, response, upload_id, parts)
+      error -> error
     end
   end
 
@@ -328,17 +320,45 @@ defmodule LawnBot.Adapters.QQ.API do
   end
 
   defp upload_file_parts(name, access_token, response, upload_id, parts, path) do
-    case File.open(path, [:read, :binary]) do
+    parts
+    |> with_offsets()
+    |> Task.async_stream(
+      fn {part, offset} ->
+        with {:ok, chunk} <- read_part(path, offset, part.size),
+             :ok <- put_part(part, chunk) do
+          {:ok, part_metadata(part, chunk)}
+        end
+      end,
+      async_stream_options()
+    )
+    |> collect_parts()
+    |> case do
+      {:ok, parts} -> finish_parts(name, access_token, response, upload_id, parts)
+      error -> error
+    end
+  end
+
+  defp with_offsets(parts) do
+    {parts, _size} =
+      Enum.map_reduce(parts, 0, fn part, offset -> {{part, offset}, offset + part.size} end)
+
+    parts
+  end
+
+  # Raw file handles are owned by the process that opened them, and tasks are
+  # spawned per part, so each task opens its own handle and reads by offset.
+  defp read_part(path, offset, size) do
+    case :file.open(path, [:read, :binary, :raw]) do
       {:ok, file} ->
         try do
-          Enum.reduce_while(parts, :ok, fn part, :ok ->
-            case upload_file_part(file, name, access_token, response, upload_id, part) do
-              :ok -> {:cont, :ok}
-              {:error, _reason} = error -> {:halt, error}
-            end
-          end)
+          case :file.pread(file, offset, size) do
+            {:ok, chunk} when byte_size(chunk) == size -> {:ok, chunk}
+            :eof -> {:error, "unexpected end of attachment file"}
+            {:ok, _short} -> {:error, "unexpected end of attachment file"}
+            {:error, reason} -> {:error, :file.format_error(reason)}
+          end
         after
-          File.close(file)
+          :file.close(file)
         end
 
       {:error, reason} ->
@@ -346,17 +366,47 @@ defmodule LawnBot.Adapters.QQ.API do
     end
   end
 
-  defp upload_file_part(file, name, access_token, response, upload_id, part) do
-    case IO.binread(file, part.size) do
-      chunk when is_binary(chunk) and byte_size(chunk) == part.size ->
-        upload_part(name, access_token, response, upload_id, part, chunk)
+  defp part_metadata(part, chunk) do
+    %{part: part, size: byte_size(chunk), md5: hash(:md5, chunk)}
+  end
 
-      :eof ->
-        {:error, "unexpected end of attachment file"}
+  defp async_stream_options do
+    [
+      max_concurrency: @upload_concurrency,
+      ordered: true,
+      timeout: @upload_part_timeout
+    ]
+  end
 
-      {:error, reason} ->
-        {:error, :file.format_error(reason)}
+  defp collect_parts(stream) do
+    stream
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, {:ok, part}}, {:ok, parts} -> {:cont, {:ok, [part | parts]}}
+      {:ok, {:error, _reason} = error}, _parts -> {:halt, error}
+      {:exit, reason}, _parts -> {:halt, {:error, "upload part failed: #{inspect(reason)}"}}
+    end)
+    |> case do
+      {:ok, parts} -> {:ok, Enum.reverse(parts)}
+      error -> error
     end
+  end
+
+  defp finish_parts(name, access_token, response, upload_id, parts) do
+    # The API rejects finishing a part while earlier parts are unfinished
+    # ("前序分片未完成"), so finishes run in part order even though PUTs do not.
+    Enum.reduce_while(parts, :ok, fn %{part: part, size: size, md5: md5}, :ok ->
+      body = %{
+        "upload_id" => upload_id,
+        "part_index" => part.index,
+        "block_size" => size,
+        "md5" => md5
+      }
+
+      case post_api(name, access_token, part_finish_path(response), body) do
+        {:ok, _body} -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp hashes_for_binary(binary) do
